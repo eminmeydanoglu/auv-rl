@@ -1,0 +1,36 @@
+<mujoco name="Taluy equipments">
+    <actuator>
+        <general name="thruster_0" site="thruster_0_site" gear="0 0 1 0 0 0" ctrlrange="-60 60"/>
+        <general name="thruster_1" site="thruster_1_site" gear="0 0 1 0 0 0" ctrlrange="-60 60"/>
+        <general name="thruster_2" site="thruster_2_site" gear="0 0 1 0 0 0" ctrlrange="-60 60"/>
+        <general name="thruster_3" site="thruster_3_site" gear="0 0 1 0 0 0" ctrlrange="-60 60"/>
+        <general name="thruster_4" site="thruster_4_site" gear="0 0 1 0 0 0" ctrlrange="-60 60"/>
+        <general name="thruster_5" site="thruster_5_site" gear="0 0 1 0 0 0" ctrlrange="-60 60"/>
+        <general name="thruster_6" site="thruster_6_site" gear="0 0 1 0 0 0" ctrlrange="-60 60"/>
+        <general name="thruster_7" site="thruster_7_site" gear="0 0 1 0 0 0" ctrlrange="-60 60"/>
+    </actuator>
+
+    <!-- External wrench channels for hydro + aggregated thrust. -->
+    <actuator>
+        <general name="Force_X" site="taluy_site" gear="1 0 0 0 0 0" ctrlrange="-300 300"/>
+        <general name="Force_Y" site="taluy_site" gear="0 1 0 0 0 0" ctrlrange="-300 300"/>
+        <general name="Force_Z" site="taluy_site" gear="0 0 1 0 0 0" ctrlrange="-300 300"/>
+        <general name="Moment_K" site="taluy_site" gear="0 0 0 1 0 0" ctrlrange="-150 150"/>
+        <general name="Moment_M" site="taluy_site" gear="0 0 0 0 1 0" ctrlrange="-150 150"/>
+        <general name="Moment_N" site="taluy_site" gear="0 0 0 0 0 1" ctrlrange="-150 150"/>
+    </actuator>
+
+    <sensor>
+        <framepos name="taluy_body_position" objtype="site" objname="taluy_site"/>
+        <framequat name="taluy_body_orientation" objtype="site" objname="taluy_site"/>
+        <framelinvel name="taluy_linvel" objtype="site" objname="taluy_site"/>
+        <framelinacc name="taluy_linacc" objtype="site" objname="taluy_site"/>
+        <frameangvel name="taluy_angvel" objtype="site" objname="taluy_site"/>
+        <frameangacc name="taluy_angacc" objtype="site" objname="taluy_site"/>
+
+        <!-- Keep IMU names aligned with helper defaults. -->
+        <accelerometer name="IMU_linacc" site="taluy_site"/>
+        <velocimeter name="IMU_linvel" site="taluy_site"/>
+        <gyro name="IMU_gyro" site="taluy_site"/>
+    </sensor>
+</mujoco>

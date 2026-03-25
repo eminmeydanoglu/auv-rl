@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auvrl"
+version = "0.1.0"
+description = "AUV dynamics and MJLab extensions for underwater RL"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "PyYAML>=6.0",
+    "mjlab",
+    "tensorboard>=2.20",
+    "setuptools<82",
+    "pydantic>=2.12",
+    "pyright>=1.1.408",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"auvrl" = [
+    "asset_zoo/thrusters/*.yaml",
+    "asset_zoo/vehicles/taluy/*.yaml",
+    "asset_zoo/vehicles/taluy/*.xml",
+    "asset_zoo/vehicles/taluy/*.stl",
+]
+
+[tool.uv.sources]
+mjlab = { git = "https://github.com/mujocolab/mjlab" }

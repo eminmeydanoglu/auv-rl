@@ -1,0 +1,51 @@
+<mujoco model="Taluy body">
+    <body name="taluy_body" pos="0 0 0" euler="0 0 0">
+        <freejoint name="taluy_joint"/>
+
+        <!--
+          Inertial values mapped from the latest Taluy rigid-body 6x6 matrix.
+          COM offset is derived from translation-rotation coupling terms.
+        -->
+        <inertial
+            pos="0 0 -0.02"
+            mass="29.8419"
+            fullinertia="0.931063 2.108063 2.180000 -0.031700 0.129000 -0.107000"
+        />
+        <geom name="taluy_geom" type="mesh" mesh="taluy_body_mesh" rgba="0.2 0.2 0.25 0.7"/>
+
+        <site name="taluy_site" pos="0 0 0" size="0.001"/>
+
+        <!-- Thrusters (same order as taluy_description thruster_0..thruster_7). -->
+        <body name="thruster_0" pos="0.16040 0.20070 -0.012879" quat="0 1 0 0">
+            <site name="thruster_0_site" type="capsule" fromto="0 0 0 0 0 0.12" size="0.005" rgba="1 0 0 1"/>
+        </body>
+
+        <body name="thruster_1" pos="0.16040 -0.20070 -0.012879" quat="0 1 0 0">
+            <site name="thruster_1_site" type="capsule" fromto="0 0 0 0 0 0.12" size="0.005" rgba="1 0 0 1"/>
+        </body>
+
+        <body name="thruster_2" pos="-0.16040 0.20070 -0.012879" quat="0 1 0 0">
+            <site name="thruster_2_site" type="capsule" fromto="0 0 0 0 0 0.12" size="0.005" rgba="1 0 0 1"/>
+        </body>
+
+        <body name="thruster_3" pos="-0.16040 -0.20070 -0.012879" quat="0 1 0 0">
+            <site name="thruster_3_site" type="capsule" fromto="0 0 0 0 0 0.12" size="0.005" rgba="1 0 0 1"/>
+        </body>
+
+        <body name="thruster_4" pos="0.346313 0.225406 -0.031653" quat="0.653281 -0.653281 -0.270598 0.270598">
+            <site name="thruster_4_site" type="capsule" fromto="0 0 0 0 0 0.12" size="0.005" rgba="1 0 0 1"/>
+        </body>
+
+        <body name="thruster_5" pos="0.346313 -0.225406 -0.031653" quat="0.653281 0.653281 -0.270598 -0.270598">
+            <site name="thruster_5_site" type="capsule" fromto="0 0 0 0 0 0.12" size="0.005" rgba="1 0 0 1"/>
+        </body>
+
+        <body name="thruster_6" pos="-0.346313 0.225406 -0.031653" quat="0.653281 -0.653281 0.270598 -0.270598">
+            <site name="thruster_6_site" type="capsule" fromto="0 0 0 0 0 0.12" size="0.005" rgba="1 0 0 1"/>
+        </body>
+
+        <body name="thruster_7" pos="-0.346313 -0.225406 -0.031653" quat="0.653281 0.653281 0.270598 0.270598">
+            <site name="thruster_7_site" type="capsule" fromto="0 0 0 0 0 0.12" size="0.005" rgba="1 0 0 1"/>
+        </body>
+    </body>
+</mujoco>
