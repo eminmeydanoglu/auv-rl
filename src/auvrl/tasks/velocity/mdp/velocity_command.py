@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -145,8 +145,13 @@ class UniformBodyVelocityCommand(CommandTerm):
         name: str,
         server: "viser.ViserServer",
         get_env_idx: Callable[[], int],
+        *,
+        on_change: Callable[[], None] | None = None,
+        request_action: Callable[[str, Any], None] | None = None,
     ) -> None:
         from viser import Icon
+
+        del request_action
 
         axes = [
             ("lin_vel_x", self.cfg.ranges.lin_vel_x),
@@ -181,8 +186,15 @@ class UniformBodyVelocityCommand(CommandTerm):
                 def _(_ev, _slider=slider, _max_input=max_input) -> None:
                     _slider.min = -_max_input.value
                     _slider.max = _max_input.value
+                    if on_change is not None:
+                        on_change()
 
                 sliders.append(slider)
+
+                @slider.on_update
+                def _(_ev) -> None:
+                    if on_change is not None:
+                        on_change()
 
             zero_btn = server.gui.add_button("Zero", icon=Icon.SQUARE_X)
 
@@ -190,6 +202,13 @@ class UniformBodyVelocityCommand(CommandTerm):
             def _(_) -> None:
                 for slider in sliders:
                     slider.value = 0.0
+                if on_change is not None:
+                    on_change()
+
+            @enabled.on_update
+            def _(_ev) -> None:
+                if on_change is not None:
+                    on_change()
 
         self._joystick_enabled = enabled
         self._joystick_sliders = sliders

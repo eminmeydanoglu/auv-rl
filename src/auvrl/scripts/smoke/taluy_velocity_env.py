@@ -30,8 +30,8 @@ from auvrl import (  # noqa: E402  # type: ignore[import-not-found]
 
 
 EXPECTED_COMMAND = torch.tensor([0.25, -0.15, 0.10, 0.30, -0.20, 0.45])
-EXPECTED_ACTOR_OBS_DIM = 29
-EXPECTED_CRITIC_OBS_DIM = 34
+EXPECTED_ACTOR_OBS_DIM = 21
+EXPECTED_CRITIC_OBS_DIM = 22
 EXPECTED_REWARD_TERMS = {
     "track_linear_velocity",
     "track_angular_velocity",
@@ -122,27 +122,10 @@ def _check_command_and_observations(env: ManagerBasedRlEnv) -> None:
     if not torch.allclose(last_action_slice, torch.zeros_like(last_action_slice)):
         raise AssertionError("Last-action slice should start at zero after reset.")
 
-    thruster_force_slice = actor_obs[:, 21:29]
-    if not torch.allclose(
-        thruster_force_slice,
-        torch.zeros_like(thruster_force_slice),
-    ):
-        raise AssertionError("Thruster-force slice should start at zero after reset.")
-
-    critic_depth = critic_obs[:, 29:30]
-    critic_current = critic_obs[:, 30:33]
-    critic_voltage = critic_obs[:, 33:34]
+    critic_depth = critic_obs[:, 21:22]
     if not torch.allclose(critic_depth, torch.zeros_like(critic_depth)):
         raise AssertionError(
             "Critic depth-error term should start at zero after reset."
-        )
-    if not torch.allclose(critic_current, torch.zeros_like(critic_current)):
-        raise AssertionError(
-            "Critic current-velocity term should start at zero with no current."
-        )
-    if not torch.allclose(critic_voltage, torch.zeros_like(critic_voltage)):
-        raise AssertionError(
-            "Critic voltage-offset term should start at zero at nominal voltage."
         )
 
     if int(command_term.command_counter.min().item()) != 1:
