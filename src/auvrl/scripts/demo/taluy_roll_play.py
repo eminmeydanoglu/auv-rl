@@ -64,6 +64,10 @@ ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_COMMAND = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
+def _wrap_angle_rad(angle_rad: float) -> float:
+    return (angle_rad + math.pi) % (2.0 * math.pi) - math.pi
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -447,6 +451,10 @@ class RollInspector:
         self._actor_obs_panel: ScalarBarPanel | None = None
         self._critic_obs_panel: ScalarBarPanel | None = None
         self._viewer_frame_rate_hz: float | None = None
+        self._odom_ref_pos_w: list[float] | None = None
+        self._odom_ref_pitch_rad: float | None = None
+        self._odom_ref_yaw_rad: float | None = None
+        self._last_episode_step: int | None = None
 
         if self._jsonl_path is not None:
             self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)
@@ -524,6 +532,35 @@ class RollInspector:
         roll, pitch, yaw = quat_wxyz_to_roll_pitch_yaw(quat_wxyz)
         state = get_roll_task_state(self._base_env)
         policy_wrench = wrench_term.action_to_wrench(actions)
+        current_pos_w = _root_pos_w[env_idx].detach().cpu().tolist()
+        current_rpy_rad = [
+            float(roll[env_idx].item()),
+            float(pitch[env_idx].item()),
+            float(yaw[env_idx].item()),
+        ]
+        current_episode_step = int(self._base_env.episode_length_buf[env_idx].item())
+        if (
+            self._odom_ref_pos_w is None
+            or self._odom_ref_pitch_rad is None
+            or self._odom_ref_yaw_rad is None
+            or self._last_episode_step is None
+            or current_episode_step < self._last_episode_step
+        ):
+            self._odom_ref_pos_w = list(current_pos_w)
+            self._odom_ref_pitch_rad = current_rpy_rad[1]
+            self._odom_ref_yaw_rad = current_rpy_rad[2]
+        self._last_episode_step = current_episode_step
+
+        position_from_start_w_m = [
+            current_pos_w[i] - self._odom_ref_pos_w[i] for i in range(3)
+        ]
+        rpy_from_start_rad = [
+            float(state.phi_total_rad[env_idx].item()),
+            _wrap_angle_rad(current_rpy_rad[1] - self._odom_ref_pitch_rad),
+            _wrap_angle_rad(current_rpy_rad[2] - self._odom_ref_yaw_rad),
+        ]
+        rpy_from_start_deg = [value * 180.0 / math.pi for value in rpy_from_start_rad]
+        current_rpy_deg = [value * 180.0 / math.pi for value in current_rpy_rad]
 
         obs_terms = self._base_env.observation_manager.get_active_iterable_terms(env_idx)
         actor_obs = _iterable_terms_to_dict(obs_terms, prefix="actor-")
@@ -575,20 +612,33 @@ class RollInspector:
             "thruster_saturation_fraction": float(
                 wrench_term.step_saturation_fraction[env_idx].item()
             ),
-            "lin_vel_b": robot.data.root_link_lin_vel_b[env_idx]
-            .detach()
-            .cpu()
-            .tolist(),
-            "ang_vel_b": robot.data.root_link_ang_vel_b[env_idx]
-            .detach()
-            .cpu()
-            .tolist(),
+            "lin_vel_b": robot.data.root_link_lin_vel_b[env_idx].detach().cpu().tolist(),
+            "ang_vel_b": robot.data.root_link_ang_vel_b[env_idx].detach().cpu().tolist(),
+            "odometry": {
+                "pose.position_w_m": current_pos_w,
+                "pose.position_from_start_w_m": position_from_start_w_m,
+                "pose.rpy_current_rad": current_rpy_rad,
+                "pose.rpy_current_deg": current_rpy_deg,
+                "pose.rpy_from_start_rad": rpy_from_start_rad,
+                "pose.rpy_from_start_deg": rpy_from_start_deg,
+                "twist.linear_b_m_s": robot.data.root_link_lin_vel_b[env_idx]
+                .detach()
+                .cpu()
+                .tolist(),
+                "twist.angular_b_rad_s": robot.data.root_link_ang_vel_b[env_idx]
+                .detach()
+                .cpu()
+                .tolist(),
+                "twist.angular_b_deg_s": [
+                    float(value) * 180.0 / math.pi
+                    for value in robot.data.root_link_ang_vel_b[env_idx]
+                    .detach()
+                    .cpu()
+                    .tolist()
+                ],
+            },
             "quat_wxyz": quat_wxyz[env_idx].detach().cpu().tolist(),
-            "euler_rpy_rad": [
-                float(roll[env_idx].item()),
-                float(pitch[env_idx].item()),
-                float(yaw[env_idx].item()),
-            ],
+            "euler_rpy_rad": current_rpy_rad,
             "roll_state": {
                 "phi_total_rad": _tensor_env_value(state.phi_total_rad, env_idx),
                 "delta_roll_rad": _tensor_env_value(state.delta_roll_rad, env_idx),
@@ -648,13 +698,6 @@ class RollInspector:
             "thruster_max_abs_n": snapshot["thruster_max_abs_n"],
             "thruster_saturation_fraction": snapshot["thruster_saturation_fraction"],
         }
-        attitude = {
-            "quat_wxyz": snapshot["quat_wxyz"],
-            "euler_rpy_rad": snapshot["euler_rpy_rad"],
-            "euler_rpy_deg": [
-                float(value) * 180.0 / math.pi for value in snapshot["euler_rpy_rad"]
-            ],
-        }
         rates = snapshot["rates"]
         rate_values = {
             "physics_hz": rates["physics_hz"],
@@ -666,8 +709,8 @@ class RollInspector:
         }
         sections = [
             self._html_kv_section("Rates", rate_values),
+            self._html_kv_section("Odometry", snapshot["odometry"]),
             self._html_kv_section("Command / Action", command_action),
-            self._html_kv_section("Attitude", attitude),
             self._html_kv_section("Roll State", snapshot["roll_state"]),
             self._html_kv_section("Last Step Rewards", snapshot["last_step_rewards"]),
             self._html_kv_section("Terminations", snapshot["terminations"]),
@@ -680,8 +723,14 @@ class RollInspector:
             f"Env {snapshot['env_idx']} | Step {snapshot['step']}</div>"
             f'<div style="font-size:0.80em;margin-bottom:8px;color:#cbd5e1;'
             'padding:6px 8px;background:rgba(51,65,85,0.45);border-radius:4px;">'
-            f"Euler rpy [rad]: {html.escape(_compact_value(snapshot['euler_rpy_rad']))}<br>"
-            f"Euler rpy [deg]: {html.escape(_compact_value(attitude['euler_rpy_deg']))}"
+            f"Odometry pose xyz from start [m]: "
+            f"{html.escape(_compact_value(snapshot['odometry']['pose.position_from_start_w_m']))}<br>"
+            f"Odometry pose rpy from start [deg]: "
+            f"{html.escape(_compact_value(snapshot['odometry']['pose.rpy_from_start_deg']))}<br>"
+            f"Twist linear [m/s]: "
+            f"{html.escape(_compact_value(snapshot['odometry']['twist.linear_b_m_s']))}<br>"
+            f"Twist angular [deg/s]: "
+            f"{html.escape(_compact_value(snapshot['odometry']['twist.angular_b_deg_s']))}"
             "</div>"
             + "".join(sections)
             + "</div>"
