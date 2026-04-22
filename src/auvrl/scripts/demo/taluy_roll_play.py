@@ -109,7 +109,7 @@ def _parse_args() -> argparse.Namespace:
         "--print-period-s",
         type=float,
         default=1.0,
-        help="Wall-clock update period for console and JSONL telemetry.",
+        help="Wall-clock update period for JSONL telemetry and verbose console logs.",
     )
     parser.add_argument(
         "--panel-period-s",
@@ -146,6 +146,11 @@ def _parse_args() -> argparse.Namespace:
         "--no-jsonl",
         action="store_true",
         help="Disable persistent JSONL telemetry.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable periodic terminal inspector logs.",
     )
     return parser.parse_args()
 
@@ -435,6 +440,7 @@ class RollInspector:
         print_period_s: float,
         panel_period_s: float,
         jsonl_path: Path | None,
+        verbose: bool,
     ) -> None:
         self._base_env = base_env
         self._env_idx = env_idx
@@ -447,6 +453,7 @@ class RollInspector:
         self._last_rate_step = int(base_env.common_step_counter)
         self._measured_steps_per_wall_s = 0.0
         self._jsonl_path = jsonl_path
+        self._verbose = bool(verbose)
         self._details_html_handle: Any | None = None
         self._actor_obs_panel: ScalarBarPanel | None = None
         self._critic_obs_panel: ScalarBarPanel | None = None
@@ -502,8 +509,9 @@ class RollInspector:
         snapshot = self.snapshot(actions)
         if force or console_due:
             self._last_console_wall_time = now
-            self._print_snapshot(snapshot)
             self._write_jsonl(snapshot)
+            if self._verbose:
+                self._print_snapshot(snapshot)
         if force or panel_due:
             self._last_panel_wall_time = now
             self._update_panel(snapshot)
@@ -915,6 +923,7 @@ def main() -> None:
         print_period_s=args.print_period_s,
         panel_period_s=args.panel_period_s,
         jsonl_path=jsonl_path,
+        verbose=args.verbose,
     )
 
     fixed_command = (
