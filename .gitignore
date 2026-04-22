@@ -32,3 +32,12 @@ htmlcov/
 uv.lock
 *.log
 *.pt
+
+!src/auvrl/tasks/
+!src/auvrl/tasks/**
+!tests/tasks/
+!tests/tasks/**
+src/auvrl/tasks/**/__pycache__/
+src/auvrl/tasks/**/*.py[cod]
+tests/tasks/**/__pycache__/
+tests/tasks/**/*.py[cod]
