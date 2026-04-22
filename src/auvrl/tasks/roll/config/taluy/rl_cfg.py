@@ -8,7 +8,7 @@ def taluy_roll_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
             hidden_dims=(512, 256, 128),
-            activation="elu", # similar to relu
+            activation="elu",
             obs_normalization=True,
             distribution_cfg={
                 "class_name": "GaussianDistribution",

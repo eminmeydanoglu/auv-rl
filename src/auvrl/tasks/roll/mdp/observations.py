@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
 
-def base_quat_wxyz( # simden veriyi doğru alıyor mu
+def base_quat_wxyz(
     env: ManagerBasedRlEnv,
     entity_name: str = "robot",
 ) -> torch.Tensor:
@@ -26,7 +26,7 @@ def base_quat_wxyz( # simden veriyi doğru alıyor mu
     return quat_wxyz
 
 
-def depth_error_from_ref( # # simden veriyi doğru alıyor mu
+def depth_error_from_ref(
     env: ManagerBasedRlEnv,
     entity_name: str = "robot",
 ) -> torch.Tensor:

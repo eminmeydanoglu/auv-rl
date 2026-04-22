@@ -20,7 +20,7 @@ def make_roll_env_cfg(
     target_roll_deg: float = 720.0,
     roll_direction: int = 1,
     settle_window_s: float = 1.0,
-    k_prog: float = 8.0, # roll progress in right direction
+    k_prog: float = 8.0,
     k_xy: float = 1.5,
     k_pitch: float = 1.0,
     k_yaw: float = 0.5,
