@@ -181,6 +181,7 @@ def main() -> None:
         print(f"  critic_obs_shape: {tuple(obs['critic'].shape)}")
         print(f"  action_terms: {list(env.action_manager.active_terms)}")
         print(f"  reward_terms: {list(env.reward_manager.active_terms)}")
+        print(f"  metric_terms: {list(env.metrics_manager.active_terms)}")
         print(f"  termination_terms: {list(env.termination_manager.active_terms)}")
         print(f"  phi_total_rad: {_format_stats(state.phi_total_rad)}")
         print(f"  delta_roll_rad: {_format_stats(state.delta_roll_rad)}")

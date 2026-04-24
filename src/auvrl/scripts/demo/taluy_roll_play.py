@@ -1,9 +1,10 @@
 """Interactive Taluy roll-task training inspector.
 
-This launches the deterministic Taluy roll task without loading a neural
-network.  The Viser command GUI exposes a manual 6-DoF body-velocity reference,
-and a small hand-tuned feedback policy converts that reference into the roll
-task's normalized ``body_wrench`` action.
+This launches the deterministic Taluy roll task as a live inspector.  The Viser
+command GUI exposes a manual 6-DoF body-velocity reference, and a small
+hand-tuned feedback policy converts that reference into the roll task's
+normalized ``body_wrench`` action.  A trained roll checkpoint can also be loaded
+and selected from the same inspector panel.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Sequence
 from collections import deque
+from dataclasses import asdict
 from datetime import datetime
 import html
 import json
@@ -29,8 +31,16 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 try:
+    import yaml
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "Missing dependency 'pyyaml'. Install project deps first (for example `uv sync`)."
+    ) from exc
+
+try:
     from mjlab.envs import ManagerBasedRlEnv  # type: ignore[import-not-found]
-    from mjlab.rl import RslRlVecEnvWrapper  # type: ignore[import-not-found]
+    from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper  # type: ignore[import-not-found]
+    from mjlab.utils.os import get_checkpoint_path  # type: ignore[import-not-found]
     from mjlab.utils.torch import configure_torch_backends  # type: ignore[import-not-found]
     from mjlab.viewer import (  # type: ignore[import-not-found]
         NativeMujocoViewer,
@@ -43,9 +53,11 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 from auvrl import (  # noqa: E402  # type: ignore[import-not-found]
+    ROLL_CURRICULUM_STAGES,
     UniformBodyVelocityCommand,
     UniformBodyVelocityCommandCfg,
     make_taluy_roll_env_cfg,
+    taluy_roll_ppo_runner_cfg,
 )
 from auvrl.actuator.body_wrench_action import (  # noqa: E402  # type: ignore[import-not-found]
     BodyWrenchAction,
@@ -62,6 +74,9 @@ from auvrl.tasks.roll.runtime import (  # noqa: E402  # type: ignore[import-not-
 
 ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_COMMAND = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+DEFAULT_ROLL_EXPERIMENT_NAME = taluy_roll_ppo_runner_cfg().experiment_name
+DEFAULT_CHECKPOINT_REGEX = "model_.*.pt"
+DEFAULT_RUN_DIR_REGEX = ".*"
 
 
 def _wrap_angle_rad(angle_rad: float) -> float:
@@ -70,6 +85,48 @@ def _wrap_angle_rad(angle_rad: float) -> float:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--checkpoint-file",
+        type=Path,
+        default=None,
+        help="Direct path to a roll PPO checkpoint file.",
+    )
+    parser.add_argument(
+        "--experiment-name",
+        default=DEFAULT_ROLL_EXPERIMENT_NAME,
+        help="Experiment folder under logs/rsl_rl/ when --checkpoint-file is omitted.",
+    )
+    parser.add_argument(
+        "--run-dir",
+        default=DEFAULT_RUN_DIR_REGEX,
+        help="Regex for the run directory when resolving a checkpoint from logs.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=DEFAULT_CHECKPOINT_REGEX,
+        help="Regex for the checkpoint filename when resolving from logs.",
+    )
+    parser.add_argument(
+        "--policy",
+        choices=("manual", "checkpoint"),
+        default="manual",
+        help="Initial policy source. `checkpoint` requires a loadable roll checkpoint.",
+    )
+    parser.add_argument(
+        "--curriculum-stage",
+        choices=tuple(ROLL_CURRICULUM_STAGES),
+        default=None,
+        help="Static roll curriculum stage to inspect. Example: c0_90_discovery.",
+    )
+    parser.add_argument(
+        "--episode-length-s",
+        type=float,
+        default=None,
+        help=(
+            "Episode horizon for play mode. Defaults to the selected curriculum "
+            "stage horizon, or 300s when no stage is selected."
+        ),
+    )
     parser.add_argument(
         "--viewer",
         choices=("auto", "native", "viser"),
@@ -155,6 +212,46 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _checkpoint_lookup_requested(args: argparse.Namespace) -> bool:
+    return (
+        args.policy == "checkpoint"
+        or args.checkpoint_file is not None
+        or str(args.experiment_name) != DEFAULT_ROLL_EXPERIMENT_NAME
+        or str(args.run_dir) != DEFAULT_RUN_DIR_REGEX
+        or str(args.checkpoint) != DEFAULT_CHECKPOINT_REGEX
+    )
+
+
+def _resolve_checkpoint_path(args: argparse.Namespace) -> Path:
+    if args.checkpoint_file is not None:
+        checkpoint_path = Path(args.checkpoint_file)
+        if not checkpoint_path.exists():
+            raise SystemExit(f"Checkpoint file not found: {checkpoint_path}")
+        return checkpoint_path.resolve()
+
+    log_root = ROOT / "logs" / "rsl_rl" / str(args.experiment_name)
+    try:
+        return get_checkpoint_path(log_root, args.run_dir, args.checkpoint)
+    except Exception as exc:
+        raise SystemExit(
+            f"Failed to resolve checkpoint from {log_root}: {exc}"
+        ) from exc
+
+
+def _load_agent_cfg_dict(checkpoint_path: Path) -> dict[str, Any]:
+    params_path = checkpoint_path.parent / "params" / "agent.yaml"
+    if not params_path.exists():
+        return asdict(taluy_roll_ppo_runner_cfg())
+
+    with params_path.open("r", encoding="utf-8") as file:
+        cfg = yaml.full_load(file)
+    if not isinstance(cfg, dict):
+        raise SystemExit(
+            f"Expected mapping in {params_path}, got {type(cfg).__name__}."
+        )
+    return cfg
+
+
 def _resolve_device(device_arg: str) -> str:
     if device_arg == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
@@ -207,9 +304,14 @@ def _make_body_velocity_command_cfg() -> UniformBodyVelocityCommandCfg:
 
 
 def _make_roll_inspector_env_cfg(args: argparse.Namespace):
+    episode_length_s = args.episode_length_s
+    if episode_length_s is None and args.curriculum_stage is None:
+        episode_length_s = 300.0
+
     cfg = make_taluy_roll_env_cfg(
         num_envs=args.num_envs,
-        episode_length_s=300.0,
+        curriculum_stage=args.curriculum_stage,
+        episode_length_s=episode_length_s,
     )
     cfg.commands["body_velocity"] = _make_body_velocity_command_cfg()
     if args.no_terminations:
@@ -431,6 +533,55 @@ class SimpleBodyVelocityTrackingPolicy:
         return wrench / self._wrench_limits
 
 
+class SwitchableRollPolicy:
+    def __init__(
+        self,
+        *,
+        manual_policy: Callable[[Any], torch.Tensor],
+        checkpoint_policy: Callable[[Any], torch.Tensor] | None,
+        mode: str,
+        checkpoint_path: Path | None,
+        checkpoint_owner: Any | None = None,
+    ) -> None:
+        self._manual_policy = manual_policy
+        self._checkpoint_policy = checkpoint_policy
+        self._checkpoint_path = checkpoint_path
+        self._checkpoint_owner = checkpoint_owner
+        self._mode = "manual"
+        self.set_mode(mode)
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def checkpoint_available(self) -> bool:
+        return self._checkpoint_policy is not None
+
+    @property
+    def checkpoint_path(self) -> Path | None:
+        return self._checkpoint_path
+
+    def available_modes(self) -> tuple[str, ...]:
+        if self.checkpoint_available:
+            return ("manual", "checkpoint")
+        return ("manual",)
+
+    def set_mode(self, mode: str) -> None:
+        if mode == "checkpoint" and self._checkpoint_policy is None:
+            raise RuntimeError("Checkpoint policy is not loaded.")
+        if mode not in ("manual", "checkpoint"):
+            raise ValueError(f"Unknown policy mode: {mode}")
+        self._mode = mode
+
+    def __call__(self, obs: Any) -> torch.Tensor:
+        if self._mode == "manual":
+            return self._manual_policy(obs)
+        if self._checkpoint_policy is None:
+            raise RuntimeError("Checkpoint policy is not loaded.")
+        return self._checkpoint_policy(obs)
+
+
 class RollInspector:
     def __init__(
         self,
@@ -441,6 +592,8 @@ class RollInspector:
         panel_period_s: float,
         jsonl_path: Path | None,
         verbose: bool,
+        policy: SwitchableRollPolicy,
+        curriculum_stage: str | None,
     ) -> None:
         self._base_env = base_env
         self._env_idx = env_idx
@@ -454,7 +607,10 @@ class RollInspector:
         self._measured_steps_per_wall_s = 0.0
         self._jsonl_path = jsonl_path
         self._verbose = bool(verbose)
+        self._policy = policy
+        self._curriculum_stage = curriculum_stage
         self._details_html_handle: Any | None = None
+        self._policy_status_html_handle: Any | None = None
         self._actor_obs_panel: ScalarBarPanel | None = None
         self._critic_obs_panel: ScalarBarPanel | None = None
         self._viewer_frame_rate_hz: float | None = None
@@ -475,6 +631,24 @@ class RollInspector:
 
     def create_viser_gui(self, server: Any) -> None:
         with server.gui.add_folder("Roll Inspector"):
+            policy_options = list(self._policy.available_modes())
+            policy_dropdown = server.gui.add_dropdown(
+                "Policy Source",
+                options=policy_options,
+                initial_value=self._policy.mode,
+            )
+            self._policy_status_html_handle = server.gui.add_html(
+                self._render_policy_status_html()
+            )
+
+            @policy_dropdown.on_update
+            def _(event) -> None:
+                try:
+                    self._policy.set_mode(str(event.target.value))
+                except RuntimeError:
+                    event.target.value = self._policy.mode
+                self._update_policy_status()
+
             self._actor_obs_panel = ScalarBarPanel(
                 server,
                 "Actor Observations",
@@ -489,6 +663,26 @@ class RollInspector:
                 '<div style="padding:0.5em;color:#999;font-size:0.85em;">'
                 "Waiting for inspector data...</div>"
             )
+
+    def _render_policy_status_html(self) -> str:
+        checkpoint_path = self._policy.checkpoint_path
+        checkpoint_value = (
+            str(checkpoint_path) if checkpoint_path is not None else "not loaded"
+        )
+        curriculum_value = self._curriculum_stage or "default_roll_v1"
+        return (
+            '<div style="padding:0.35em 0.5em;font-family:monospace;'
+            'font-size:0.80em;line-height:1.35;color:#dbeafe;'
+            'background:rgba(30,41,59,0.65);border-radius:4px;">'
+            f"<strong>policy:</strong> {html.escape(self._policy.mode)}<br>"
+            f"<strong>checkpoint:</strong> {html.escape(checkpoint_value)}<br>"
+            f"<strong>curriculum:</strong> {html.escape(curriculum_value)}"
+            "</div>"
+        )
+
+    def _update_policy_status(self) -> None:
+        if self._policy_status_html_handle is not None:
+            self._policy_status_html_handle.content = self._render_policy_status_html()
 
     def maybe_emit(self, actions: torch.Tensor, *, force: bool = False) -> None:
         now = time.time()
@@ -582,11 +776,15 @@ class RollInspector:
         physics_dt_s = float(self._base_env.cfg.sim.mujoco.timestep)
         control_dt_s = float(self._base_env.step_dt)
         measured_actual_rt = self._measured_steps_per_wall_s * control_dt_s
+        checkpoint_path = self._policy.checkpoint_path
 
         return {
             "time_s": self._last_wall_time,
             "step": int(self._base_env.common_step_counter),
             "env_idx": env_idx,
+            "policy_mode": self._policy.mode,
+            "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+            "curriculum_stage": self._curriculum_stage,
             "rates": {
                 "physics_dt_s": physics_dt_s,
                 "physics_hz": 1.0 / physics_dt_s,
@@ -669,6 +867,7 @@ class RollInspector:
         print(
             "[roll-inspector] "
             f"step={snapshot['step']} env={snapshot['env_idx']} "
+            f"policy={snapshot['policy_mode']} "
             f"rt={rates['measured_actual_rt']:.3f} "
             f"obs_wall_hz={rates['measured_observation_hz_wall']:.1f} "
             f"command_b={snapshot['command_b']} "
@@ -697,6 +896,7 @@ class RollInspector:
             self._critic_obs_panel.update(snapshot["critic_observations"])
 
         command_action = {
+            "policy_mode": snapshot["policy_mode"],
             "command_b": snapshot["command_b"],
             "lin_vel_b": snapshot["lin_vel_b"],
             "ang_vel_b": snapshot["ang_vel_b"],
@@ -716,6 +916,15 @@ class RollInspector:
             "viewer_frame_rate_hz": rates["viewer_frame_rate_hz"],
         }
         sections = [
+            self._html_kv_section(
+                "Policy",
+                {
+                    "policy_mode": snapshot["policy_mode"],
+                    "checkpoint_path": snapshot["checkpoint_path"],
+                    "curriculum_stage": snapshot["curriculum_stage"]
+                    or "default_roll_v1",
+                },
+            ),
             self._html_kv_section("Rates", rate_values),
             self._html_kv_section("Odometry", snapshot["odometry"]),
             self._html_kv_section("Command / Action", command_action),
@@ -851,6 +1060,7 @@ def _run_dry_steps(
     _set_fixed_command(base_env, fixed_command)
 
     reward = torch.zeros(env.num_envs, device=base_env.device)
+    actions = base_env.action_manager.action.clone()
     for _ in range(num_steps):
         obs = env.get_observations()
         actions = policy(obs)
@@ -899,13 +1109,26 @@ def main() -> None:
     args = _parse_args()
     device = _resolve_device(args.device)
     viewer = _resolve_viewer(args.viewer)
+    checkpoint_required = args.policy == "checkpoint"
+    checkpoint_path: Path | None = None
+    agent_cfg_dict: dict[str, Any] | None = None
 
     if args.num_envs <= 0:
         raise SystemExit("--num-envs must be positive.")
+    if args.episode_length_s is not None and args.episode_length_s <= 0.0:
+        raise SystemExit("--episode-length-s must be positive.")
     if args.dry_run_steps < 0:
         raise SystemExit("--dry-run-steps must be non-negative.")
     if not 0 <= args.inspect_env_idx < args.num_envs:
         raise SystemExit("--inspect-env-idx must satisfy 0 <= idx < --num-envs.")
+    if _checkpoint_lookup_requested(args):
+        try:
+            checkpoint_path = _resolve_checkpoint_path(args)
+            agent_cfg_dict = _load_agent_cfg_dict(checkpoint_path)
+        except SystemExit as exc:
+            if checkpoint_required:
+                raise
+            print(f"Checkpoint not loaded: {exc}")
 
     os.environ.setdefault("MUJOCO_GL", "egl")
     configure_torch_backends()
@@ -915,8 +1138,41 @@ def main() -> None:
         cfg=_make_roll_inspector_env_cfg(args),
         device=device,
     )
-    env = RslRlVecEnvWrapper(base_env, clip_actions=1.0)
-    policy = SimpleBodyVelocityTrackingPolicy(env)
+    clip_actions = (
+        agent_cfg_dict.get("clip_actions", 1.0)
+        if agent_cfg_dict is not None
+        else 1.0
+    )
+    env = RslRlVecEnvWrapper(base_env, clip_actions=clip_actions)
+    manual_policy = SimpleBodyVelocityTrackingPolicy(env)
+    checkpoint_policy: Callable[[Any], torch.Tensor] | None = None
+    runner: MjlabOnPolicyRunner | None = None
+    if checkpoint_path is not None and agent_cfg_dict is not None:
+        try:
+            runner = MjlabOnPolicyRunner(env, agent_cfg_dict, device=device)
+            runner.load(
+                str(checkpoint_path),
+                load_cfg={"actor": True},
+                strict=True,
+                map_location=device,
+            )
+            checkpoint_policy = runner.get_inference_policy(device=device)
+        except Exception as exc:
+            if checkpoint_required:
+                raise SystemExit(
+                    f"Failed to load checkpoint: {checkpoint_path}: {exc}"
+                ) from exc
+            print(f"Checkpoint not loaded: {checkpoint_path}: {exc}")
+            checkpoint_path = None
+            agent_cfg_dict = None
+
+    policy = SwitchableRollPolicy(
+        manual_policy=manual_policy,
+        checkpoint_policy=checkpoint_policy,
+        mode=args.policy if checkpoint_policy is not None else "manual",
+        checkpoint_path=checkpoint_path if checkpoint_policy is not None else None,
+        checkpoint_owner=runner,
+    )
     inspector = RollInspector(
         base_env,
         env_idx=args.inspect_env_idx,
@@ -924,6 +1180,8 @@ def main() -> None:
         panel_period_s=args.panel_period_s,
         jsonl_path=jsonl_path,
         verbose=args.verbose,
+        policy=policy,
+        curriculum_stage=args.curriculum_stage,
     )
 
     fixed_command = (
@@ -948,7 +1206,15 @@ def main() -> None:
             _set_fixed_command(base_env, fixed_command)
 
         print(f"Taluy roll interactive inspector | device={device} viewer={viewer}")
-        print("Policy: hand-tuned body-velocity feedback -> body_wrench action")
+        print(f"Policy: {policy.mode}")
+        if checkpoint_path is not None:
+            print(f"Loaded checkpoint: {checkpoint_path}")
+        else:
+            print("Loaded checkpoint: none")
+        if args.curriculum_stage is not None:
+            print(f"Curriculum stage: {args.curriculum_stage}")
+        else:
+            print("Curriculum stage: default_roll_v1")
         if jsonl_path is not None:
             print(f"JSONL telemetry: {jsonl_path}")
         _print_debug_legend()
@@ -956,7 +1222,7 @@ def main() -> None:
             print(
                 "Use `Commands -> Body Velocity` to set the 6D reference, "
                 "`Scene -> Body_velocity` for overlays, and `Roll Inspector` "
-                "for live training telemetry."
+                "for live training telemetry and policy selection."
             )
         else:
             print("Native viewer has no Viser panel; console/JSONL telemetry remains active.")

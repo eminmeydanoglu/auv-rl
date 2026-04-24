@@ -6,6 +6,7 @@ import math
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
@@ -127,6 +128,40 @@ def make_roll_env_cfg(
             weight=terminal_failure_weight,
             params={"success_term_name": "task_success"},
         ),
+    }
+
+    cfg.metrics = {
+        "roll_progress_ratio_last": MetricsTermCfg(
+            func=mdp.roll_progress_ratio,
+            reduce="last",
+            params={
+                "target_roll_rad": target_roll_rad,
+                "roll_direction": roll_direction,
+            },
+        ),
+        "phi_total_rad_last": MetricsTermCfg(
+            func=mdp.phi_total_rad,
+            reduce="last",
+        ),
+        "target_reached_last": MetricsTermCfg(
+            func=mdp.target_reached,
+            reduce="last",
+        ),
+        "settle_counter_s_last": MetricsTermCfg(
+            func=mdp.settle_counter_s,
+            reduce="last",
+        ),
+        "depth_abs_error_m": MetricsTermCfg(func=mdp.depth_abs_error_m),
+        "xy_drift_m": MetricsTermCfg(func=mdp.xy_drift_m),
+        "pitch_abs_rad": MetricsTermCfg(func=mdp.pitch_abs_rad),
+        "yaw_abs_error_rad": MetricsTermCfg(func=mdp.yaw_abs_error_rad),
+        "root_ang_speed_rad_s": MetricsTermCfg(func=mdp.root_ang_speed_rad_s),
+        "body_wrench_action_l2": MetricsTermCfg(func=mdp.body_wrench_action_l2),
+        "body_wrench_saturation_fraction": MetricsTermCfg(
+            func=mdp.body_wrench_saturation_fraction
+        ),
+        "water_current_speed_m_s": MetricsTermCfg(func=mdp.water_current_speed_m_s),
+        "hydro_wrench_norm": MetricsTermCfg(func=mdp.hydro_wrench_norm),
     }
 
     cfg.terminations = {
