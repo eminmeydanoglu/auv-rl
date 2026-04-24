@@ -6,6 +6,7 @@ import argparse
 import math
 import os
 from pathlib import Path
+from typing import cast
 
 try:
     import torch
@@ -24,7 +25,11 @@ except ModuleNotFoundError as exc:
         "Could not import mjlab dependencies. Ensure mjlab is available."
     ) from exc
 
-from auvrl import make_taluy_roll_env_cfg  # noqa: E402  # type: ignore[import-not-found]
+from auvrl import (  # noqa: E402  # type: ignore[import-not-found]
+    ROLL_CURRICULUM_STAGES,
+    get_roll_curriculum_stage,
+    make_taluy_roll_env_cfg,
+)
 from auvrl.tasks.roll.runtime import (  # noqa: E402  # type: ignore[import-not-found]
     action_term_slice,
     get_roll_task_state,
@@ -64,6 +69,12 @@ def _parse_args() -> argparse.Namespace:
         help="Roll task target in degrees.",
     )
     parser.add_argument(
+        "--curriculum-stage",
+        choices=tuple(ROLL_CURRICULUM_STAGES),
+        default=None,
+        help="Static roll curriculum stage to probe. Overrides --target-roll-deg.",
+    )
+    parser.add_argument(
         "--roll-direction",
         type=int,
         choices=(-1, 1),
@@ -73,8 +84,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--episode-length-s",
         type=float,
-        default=20.0,
-        help="Episode horizon in seconds.",
+        default=None,
+        help="Episode horizon in seconds. Defaults to the selected stage or 20s.",
     )
     parser.add_argument(
         "--settle-window-s",
@@ -105,6 +116,7 @@ def _format_stats(values: torch.Tensor) -> str:
 def _make_env(args: argparse.Namespace, device: str) -> ManagerBasedRlEnv:
     cfg = make_taluy_roll_env_cfg(
         num_envs=args.num_envs,
+        curriculum_stage=args.curriculum_stage,
         target_roll_deg=args.target_roll_deg,
         roll_direction=args.roll_direction,
         episode_length_s=args.episode_length_s,
@@ -127,9 +139,14 @@ def main() -> None:
     os.environ.setdefault("MUJOCO_GL", "egl")
     configure_torch_backends()
 
+    target_roll_deg = args.target_roll_deg
+    if args.curriculum_stage is not None:
+        target_roll_deg = get_roll_curriculum_stage(args.curriculum_stage).target_roll_deg
+
     env = _make_env(args, device)
     try:
-        obs, _ = env.reset()
+        obs_raw, _ = env.reset()
+        obs = cast(dict[str, torch.Tensor], obs_raw)
         action = torch.zeros(
             (env.num_envs, env.action_manager.total_action_dim),
             device=env.device,
@@ -143,13 +160,14 @@ def main() -> None:
         last_reward = torch.zeros(env.num_envs, device=env.device)
 
         for _ in range(args.steps):
-            obs, last_reward, terminated, truncated, _extras = env.step(action)
+            obs_raw, last_reward, terminated, truncated, _extras = env.step(action)
+            obs = cast(dict[str, torch.Tensor], obs_raw)
             reward_sum += last_reward
             terminated_count += terminated.long()
             truncated_count += truncated.long()
 
         state = get_roll_task_state(env)
-        target_roll_rad = math.radians(args.target_roll_deg)
+        target_roll_rad = math.radians(target_roll_deg)
         signed_progress = float(args.roll_direction) * state.phi_total_rad
         progress_ratio = signed_progress / target_roll_rad
 
@@ -157,6 +175,8 @@ def main() -> None:
         print(f"  device: {device}")
         print(f"  num_envs: {env.num_envs}")
         print(f"  steps: {args.steps}")
+        print(f"  curriculum_stage: {args.curriculum_stage}")
+        print(f"  target_roll_deg: {target_roll_deg}")
         print(f"  actor_obs_shape: {tuple(obs['actor'].shape)}")
         print(f"  critic_obs_shape: {tuple(obs['critic'].shape)}")
         print(f"  action_terms: {list(env.action_manager.active_terms)}")

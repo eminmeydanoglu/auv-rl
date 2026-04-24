@@ -29,6 +29,8 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 from auvrl import (  # noqa: E402  # type: ignore[import-not-found]
+    ROLL_CURRICULUM_STAGES,
+    get_roll_curriculum_stage,
     make_taluy_roll_env_cfg,
     taluy_roll_ppo_runner_cfg,
 )
@@ -83,8 +85,20 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--run-name",
-        default="smoke",
+        default=None,
         help="Optional suffix for the timestamped run directory.",
+    )
+    parser.add_argument(
+        "--curriculum-stage",
+        choices=tuple(ROLL_CURRICULUM_STAGES),
+        default=None,
+        help="Static roll curriculum stage to train. Example: c0_90_discovery.",
+    )
+    parser.add_argument(
+        "--resume-checkpoint",
+        type=Path,
+        default=None,
+        help="Optional PPO checkpoint to load before continuing this stage.",
     )
     parser.add_argument(
         "--logger",
@@ -101,8 +115,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--episode-length-s",
         type=float,
-        default=20.0,
-        help="Episode horizon in seconds.",
+        default=None,
+        help="Episode horizon in seconds. Defaults to the selected stage or 20s.",
     )
     parser.add_argument(
         "--upload-model",
@@ -148,6 +162,7 @@ def main() -> None:
 
     env_cfg = make_taluy_roll_env_cfg(
         num_envs=num_envs,
+        curriculum_stage=args.curriculum_stage,
         episode_length_s=args.episode_length_s,
     )
     env_cfg.seed = args.seed
@@ -155,7 +170,8 @@ def main() -> None:
     agent_cfg = taluy_roll_ppo_runner_cfg()
     agent_cfg.seed = args.seed
     agent_cfg.max_iterations = args.iterations
-    agent_cfg.run_name = args.run_name
+    run_name = args.run_name or args.curriculum_stage or "smoke"
+    agent_cfg.run_name = run_name
     agent_cfg.upload_model = args.upload_model
     if args.num_steps_per_env is not None:
         if args.num_steps_per_env <= 0:
@@ -179,7 +195,19 @@ def main() -> None:
         f"device={device} num_envs={num_envs} iterations={agent_cfg.max_iterations} "
         f"num_steps_per_env={agent_cfg.num_steps_per_env}"
     )
-    print("task=roll_v1 target_roll_deg=720.0 roll_direction=1 settle_window_s=1.0")
+    if args.curriculum_stage is None:
+        print("task=roll_v1 target_roll_deg=720.0 roll_direction=1 settle_window_s=1.0")
+    else:
+        stage = get_roll_curriculum_stage(args.curriculum_stage)
+        print(
+            f"task=roll_v1 curriculum_stage={stage.name} "
+            f"target_roll_deg={stage.target_roll_deg} "
+            f"episode_length_s={env_cfg.episode_length_s} "
+            f"settle_window_s={stage.settle_window_s}"
+        )
+        print(f"stage_description={stage.description}")
+    if args.resume_checkpoint is not None:
+        print(f"resume_checkpoint={args.resume_checkpoint}")
     print(f"log_dir={log_dir}")
 
     vec_env: RslRlVecEnvWrapper | None = None
@@ -187,6 +215,10 @@ def main() -> None:
         env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
         vec_env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
         runner = MjlabOnPolicyRunner(vec_env, asdict(agent_cfg), str(log_dir), device)
+        if args.resume_checkpoint is not None:
+            if not args.resume_checkpoint.exists():
+                raise SystemExit(f"Checkpoint file not found: {args.resume_checkpoint}")
+            runner.load(str(args.resume_checkpoint), map_location=device)
         runner.learn(
             num_learning_iterations=agent_cfg.max_iterations,
             init_at_random_ep_len=True,

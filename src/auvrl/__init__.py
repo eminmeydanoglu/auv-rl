@@ -15,7 +15,13 @@ from .envs.events import (
 )
 from .sim.hydrodynamics import AUVBodyState, HydroConfig, HydrodynamicsModel
 from .sim.underwater_hydro_action import UnderwaterHydroAction, UnderwaterHydroActionCfg
-from .tasks.roll import make_taluy_roll_env_cfg, taluy_roll_ppo_runner_cfg
+from .tasks.roll import (
+    ROLL_CURRICULUM_STAGES,
+    RollCurriculumStage,
+    get_roll_curriculum_stage,
+    make_taluy_roll_env_cfg,
+    taluy_roll_ppo_runner_cfg,
+)
 from .tasks.velocity import (
     UniformBodyVelocityCommand,
     UniformBodyVelocityCommandCfg,
@@ -30,6 +36,8 @@ __all__ = [
     "BodyWrenchActionCfg",
     "HydroConfig",
     "HydrodynamicsModel",
+    "ROLL_CURRICULUM_STAGES",
+    "RollCurriculumStage",
     "THRUSTER_LOCAL_AXIS",
     "ThrusterActuator",
     "ThrusterActuatorCfg",
@@ -37,6 +45,7 @@ __all__ = [
     "UnderwaterHydroAction",
     "UnderwaterHydroActionCfg",
     "make_taluy_roll_env_cfg",
+    "get_roll_curriculum_stage",
     "UniformBodyVelocityCommand",
     "UniformBodyVelocityCommandCfg",
     "make_taluy_base_env_cfg",

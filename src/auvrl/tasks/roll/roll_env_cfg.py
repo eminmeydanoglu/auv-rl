@@ -26,6 +26,15 @@ def make_roll_env_cfg(
     k_yaw: float = 0.5,
     k_depth: float = 1.0,
     k_smooth: float = 0.01,
+    excess_pitch_deg: float = 80.0,
+    excess_depth_error_m: float = 1.0,
+    excess_xy_drift_m: float = 1.0,
+    settle_pitch_limit_deg: float = 10.0,
+    settle_yaw_limit_deg: float = 15.0,
+    settle_ang_vel_limit_rad_s: float = 0.25,
+    settle_depth_error_limit_m: float = 0.15,
+    terminal_success_weight: float = 100.0,
+    terminal_failure_weight: float = -50.0,
 ) -> ManagerBasedRlEnvCfg:
     """Create the base deterministic roll-task config."""
     if target_roll_deg <= 0.0:
@@ -110,12 +119,12 @@ def make_roll_env_cfg(
         ),
         "terminal_success": RewardTermCfg(
             func=mdp.terminal_success_reward,
-            weight=100.0,
+            weight=terminal_success_weight,
             params={"termination_name": "task_success"},
         ),
         "terminal_failure": RewardTermCfg(
             func=mdp.terminal_failure_reward,
-            weight=-50.0,
+            weight=terminal_failure_weight,
             params={"success_term_name": "task_success"},
         ),
     }
@@ -124,15 +133,15 @@ def make_roll_env_cfg(
         **cfg.terminations,
         "excess_pitch": TerminationTermCfg(
             func=mdp.excess_pitch,
-            params={"limit_rad": math.radians(80.0)},
+            params={"limit_rad": math.radians(excess_pitch_deg)},
         ),
         "excess_depth_error": TerminationTermCfg(
             func=mdp.excess_depth_error,
-            params={"limit_m": 1.0},
+            params={"limit_m": excess_depth_error_m},
         ),
         "excess_xy_drift": TerminationTermCfg(
             func=mdp.excess_xy_drift,
-            params={"limit_m": 1.0},
+            params={"limit_m": excess_xy_drift_m},
         ),
         "task_success": TerminationTermCfg(
             func=mdp.roll_task_success,
@@ -140,10 +149,10 @@ def make_roll_env_cfg(
                 "target_roll_rad": target_roll_rad,
                 "roll_direction": roll_direction,
                 "settle_steps": settle_steps,
-                "settle_pitch_limit_rad": math.radians(10.0),
-                "settle_yaw_limit_rad": math.radians(15.0),
-                "settle_ang_vel_limit_rad_s": 0.25,
-                "settle_depth_error_limit_m": 0.15,
+                "settle_pitch_limit_rad": math.radians(settle_pitch_limit_deg),
+                "settle_yaw_limit_rad": math.radians(settle_yaw_limit_deg),
+                "settle_ang_vel_limit_rad_s": settle_ang_vel_limit_rad_s,
+                "settle_depth_error_limit_m": settle_depth_error_limit_m,
             },
         ),
     }
