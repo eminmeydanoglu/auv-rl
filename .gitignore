@@ -28,10 +28,18 @@ htmlcov/
 .idea/
 .vscode/
 
-# Local lockfiles/logs generated during ad-hoc runs
-uv.lock
+# Local agent/tool state
+.codex
+.playwright-mcp/
+
+# Local run outputs and ad-hoc artifacts
+logs/
+reports/
+remote_scripts/
+*.png
 *.log
 *.pt
+events.out.tfevents.*
 
 !src/auvrl/tasks/
 !src/auvrl/tasks/**
