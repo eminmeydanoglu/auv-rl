@@ -14,8 +14,6 @@ cd auv-rl
 uv sync
 ```
 
-If you are running headless, the training scripts default MuJoCo to EGL. CUDA is used automatically when available; otherwise the scripts fall back to CPU.
-
 Run an environment check:
 
 ```bash
@@ -29,9 +27,11 @@ uv run python -m auvrl.scripts.smoke.taluy_velocity_env
 
 It is easy to visually test how good the agent is performing.
 
-<video src="docs/media/balerina.mp4" controls width="100%"></video>
+![Taluy roll policy demo](docs/media/balerina.webp)
 
- Play a trained checkpoint:
+[Open the MP4 clip](docs/media/balerina.mp4)
+
+Play a trained checkpoint:
 
 ```bash
 uv run python -m auvrl.scripts.demo.taluy_roll_play \
