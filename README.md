@@ -1,6 +1,6 @@
 # AUVRL
 
-AUVRL is a codebase for training underwater robot control policies in MJLab/MuJoCo. It includes the robot [Taluy](https://auv.itu.edu.tr/vehicle-taluy.html), with training environments for a 6-DoF velocity controller and a roll-maneuver specialist controller (for this [task](https://robonation.gitbook.io/robosub-resources/section-3-autonomy-challenge/3.2-task-descriptions#:~:text=Figure%20%3A%20Heading%20Out-,3.2.2%20Task%201%20%2D%20Begin%20Assessment%20(Gate),-Head%20out%20to) at RoboSub). The project has the robot model, actuator/thruster code, task definitions, PPO configs, training scripts, and playback tools in one place.
+AUVRL is a codebase for training underwater robot control policies in MJLab/MuJoCo. It includes the robot [Taluy](https://auv.itu.edu.tr/vehicle-taluy.html), with training environments for a 6-DoF velocity controller and a roll-maneuver specialist controller (for this [task](https://robonation.gitbook.io/robosub-resources/section-3-autonomy-challenge/3.2-task-descriptions#:~:text=Figure%20%3A%20Heading%20Out-,3.2.2%20Task%201%20%2D%20Begin%20Assessment%20(Gate),-Head%20out%20to) in RoboSub). Robot model, actuator/thruster code, task definitions, PPO configs, training scripts, curriculums/ data randomization, playback and debug tools in one place.
 
 
 
