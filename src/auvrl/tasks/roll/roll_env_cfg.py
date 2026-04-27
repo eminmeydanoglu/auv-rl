@@ -95,7 +95,10 @@ def make_roll_env_cfg(
         "roll_progress": RewardTermCfg(
             func=mdp.roll_progress,
             weight=k_prog,
-            params={"roll_direction": roll_direction},
+            params={
+                "roll_direction": roll_direction,
+                "target_roll_rad": target_roll_rad,
+            },
         ),
         "xy_drift": RewardTermCfg(
             func=mdp.xy_drift_penalty,
