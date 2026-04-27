@@ -29,7 +29,7 @@ It is easy to visually test how good the agent is performing.
 
 ![Taluy roll policy demo](docs/media/balerina.webp)
 
-[Open the MP4 clip](docs/media/balerina.mp4)
+
 
 Play a trained checkpoint:
 
