@@ -73,6 +73,30 @@ def _parse_args() -> argparse.Namespace:
         help="Rollout steps per env per PPO update. Defaults to the runner config.",
     )
     parser.add_argument(
+        "--save-interval",
+        type=int,
+        default=None,
+        help="Checkpoint save interval in PPO iterations. Defaults to the runner config.",
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=None,
+        help="Override PPO learning rate.",
+    )
+    parser.add_argument(
+        "--entropy-coef",
+        type=float,
+        default=None,
+        help="Override PPO entropy coefficient.",
+    )
+    parser.add_argument(
+        "--desired-kl",
+        type=float,
+        default=None,
+        help="Override PPO adaptive-schedule desired KL.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -177,6 +201,22 @@ def main() -> None:
         if args.num_steps_per_env <= 0:
             raise SystemExit("--num-steps-per-env must be positive.")
         agent_cfg.num_steps_per_env = args.num_steps_per_env
+    if args.save_interval is not None:
+        if args.save_interval <= 0:
+            raise SystemExit("--save-interval must be positive.")
+        agent_cfg.save_interval = args.save_interval
+    if args.learning_rate is not None:
+        if args.learning_rate <= 0.0:
+            raise SystemExit("--learning-rate must be positive.")
+        agent_cfg.algorithm.learning_rate = args.learning_rate
+    if args.entropy_coef is not None:
+        if args.entropy_coef < 0.0:
+            raise SystemExit("--entropy-coef must be non-negative.")
+        agent_cfg.algorithm.entropy_coef = args.entropy_coef
+    if args.desired_kl is not None:
+        if args.desired_kl <= 0.0:
+            raise SystemExit("--desired-kl must be positive.")
+        agent_cfg.algorithm.desired_kl = args.desired_kl
     if args.experiment_name is not None:
         agent_cfg.experiment_name = args.experiment_name
     if args.logger is not None:
@@ -194,6 +234,12 @@ def main() -> None:
     print(
         f"device={device} num_envs={num_envs} iterations={agent_cfg.max_iterations} "
         f"num_steps_per_env={agent_cfg.num_steps_per_env}"
+    )
+    print(
+        f"save_interval={agent_cfg.save_interval} "
+        f"learning_rate={agent_cfg.algorithm.learning_rate} "
+        f"entropy_coef={agent_cfg.algorithm.entropy_coef} "
+        f"desired_kl={agent_cfg.algorithm.desired_kl}"
     )
     if args.curriculum_stage is None:
         print("task=roll_v1 target_roll_deg=720.0 roll_direction=1 settle_window_s=1.0")
