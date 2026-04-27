@@ -100,6 +100,26 @@ def test_roll_curriculum_c0_applies_static_stage_params() -> None:
     assert cfg.observations["actor"].terms["phi_total_norm"].params[
         "target_roll_rad"
     ] == math.radians(stage.target_roll_deg)
+    assert cfg.rewards["roll_progress"].params["target_roll_rad"] == math.radians(
+        stage.target_roll_deg
+    )
+
+
+def test_roll_curriculum_c2a_reach_stage_is_relaxed_bridge() -> None:
+    stage = ROLL_CURRICULUM_STAGES["c2a_360_reach"]
+    cfg = make_taluy_roll_env_cfg(num_envs=1, curriculum_stage=stage.name)
+
+    assert cfg.episode_length_s == 14.0
+    assert cfg.rewards["roll_progress"].weight == 8.0
+    assert cfg.rewards["xy_drift"].weight == 0.0
+    assert cfg.rewards["depth_hold"].weight == 0.4
+    assert cfg.rewards["terminal_failure"].weight == -30.0
+    assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 6.0
+    assert cfg.terminations["excess_depth_error"].params["limit_m"] == 1.8
+    assert cfg.terminations["task_success"].params["settle_steps"] == 13
+    assert cfg.terminations["task_success"].params[
+        "settle_ang_vel_limit_rad_s"
+    ] == 4.0
 
 
 def test_roll_play_inspector_env_cfg_accepts_curriculum_stage() -> None:

@@ -122,11 +122,56 @@ def test_roll_progress_is_positive_only_in_commanded_direction() -> None:
         torch.tensor([0.0], dtype=torch.float),
         torch.tensor([0.0], dtype=torch.float),
     )
-    forward_progress = mdp.roll_progress(env, roll_direction=1)
-    reverse_progress = mdp.roll_progress(env, roll_direction=-1)
+    forward_progress = mdp.roll_progress(
+        env,
+        roll_direction=1,
+        target_roll_rad=math.pi,
+    )
+    reverse_progress = mdp.roll_progress(
+        env,
+        roll_direction=-1,
+        target_roll_rad=math.pi,
+    )
 
     assert torch.all(forward_progress > 0.0)
     assert torch.allclose(reverse_progress, torch.zeros_like(reverse_progress))
+
+
+def test_roll_progress_is_capped_at_target() -> None:
+    env = _make_env()
+    state = get_roll_task_state(env)
+    state.phi_total_rad[:] = math.radians(350.0)
+    state.prev_roll_rad[:] = 0.0
+
+    env.episode_length_buf[:] = 1
+    env.scene["robot"].data.root_link_quat_w = quat_from_euler_xyz(
+        torch.tensor([math.radians(20.0)], dtype=torch.float),
+        torch.tensor([0.0], dtype=torch.float),
+        torch.tensor([0.0], dtype=torch.float),
+    )
+
+    progress = mdp.roll_progress(
+        env,
+        roll_direction=1,
+        target_roll_rad=math.radians(360.0),
+    )
+
+    assert torch.allclose(progress, torch.tensor([10.0 / 360.0]), atol=1.0e-6)
+
+    env.episode_length_buf[:] = 2
+    env.scene["robot"].data.root_link_quat_w = quat_from_euler_xyz(
+        torch.tensor([math.radians(40.0)], dtype=torch.float),
+        torch.tensor([0.0], dtype=torch.float),
+        torch.tensor([0.0], dtype=torch.float),
+    )
+
+    post_target_progress = mdp.roll_progress(
+        env,
+        roll_direction=1,
+        target_roll_rad=math.radians(360.0),
+    )
+
+    assert torch.allclose(post_target_progress, torch.zeros_like(post_target_progress))
 
 
 def test_action_rate_reward_matches_l2_delta() -> None:
