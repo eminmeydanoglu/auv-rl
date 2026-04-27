@@ -19,6 +19,7 @@ import json
 import math
 import os
 from pathlib import Path
+import socket
 import time
 import traceback
 from typing import Any, cast
@@ -159,8 +160,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--viser-port",
         type=int,
-        default=9000,
-        help="Viser port.",
+        default=0,
+        help="Viser port. Use 0 to pick a fresh unused local port.",
     )
     parser.add_argument(
         "--print-period-s",
@@ -272,11 +273,27 @@ def _default_jsonl_path() -> Path:
     return ROOT / "logs" / "manual_roll_inspector" / f"{stamp}.jsonl"
 
 
+def _pick_unused_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _display_viser_url(server: Any) -> str:
+    host = str(server.get_host())
+    port = int(server.get_port())
+    display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    return f"http://{display_host}:{port}"
+
+
 def _build_viser_server(host: str, port: int):
     try:
         import viser  # type: ignore[import-not-found]
     except ModuleNotFoundError as exc:
         raise SystemExit("Missing dependency 'viser'.") from exc
+
+    if port == 0:
+        port = _pick_unused_local_port()
 
     try:
         return viser.ViserServer(host=host, port=port, label="taluy-roll-inspector")
@@ -1012,6 +1029,9 @@ class RollInspectorViserPlayViewer(ViserPlayViewer):
     def setup(self) -> None:
         super().setup()
         self._roll_inspector.create_viser_gui(self._server)
+        self._scene.needs_update = True
+        self._server.flush()
+        print(f"Viser scene ready: {_display_viser_url(self._server)}")
 
     def _execute_step(self) -> bool:
         try:
