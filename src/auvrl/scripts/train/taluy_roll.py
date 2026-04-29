@@ -125,6 +125,15 @@ def _parse_args() -> argparse.Namespace:
         help="Optional PPO checkpoint to load before continuing this stage.",
     )
     parser.add_argument(
+        "--resume-mode",
+        choices=("weights-only", "full"),
+        default="weights-only",
+        help=(
+            "How to load --resume-checkpoint. 'weights-only' warm-starts actor/critic "
+            "with a fresh optimizer/LR; 'full' restores optimizer, iteration, and env state."
+        ),
+    )
+    parser.add_argument(
         "--logger",
         choices=("tensorboard", "wandb"),
         default=None,
@@ -254,6 +263,7 @@ def main() -> None:
         print(f"stage_description={stage.description}")
     if args.resume_checkpoint is not None:
         print(f"resume_checkpoint={args.resume_checkpoint}")
+        print(f"resume_mode={args.resume_mode}")
     print(f"log_dir={log_dir}")
 
     vec_env: RslRlVecEnvWrapper | None = None
@@ -264,7 +274,21 @@ def main() -> None:
         if args.resume_checkpoint is not None:
             if not args.resume_checkpoint.exists():
                 raise SystemExit(f"Checkpoint file not found: {args.resume_checkpoint}")
-            runner.load(str(args.resume_checkpoint), map_location=device)
+            if args.resume_mode == "weights-only":
+                runner.load(
+                    str(args.resume_checkpoint),
+                    load_cfg={
+                        "actor": True,
+                        "critic": True,
+                        "optimizer": False,
+                        "iteration": False,
+                        "rnd": False,
+                    },
+                    map_location=device,
+                )
+                env.unwrapped.common_step_counter = 0
+            else:
+                runner.load(str(args.resume_checkpoint), map_location=device)
         runner.learn(
             num_learning_iterations=agent_cfg.max_iterations,
             init_at_random_ep_len=True,

@@ -112,7 +112,11 @@ def terminal_success_reward(
     termination_name: str = "task_success",
 ) -> torch.Tensor:
     """Emit 1.0 on success so config weights can set the terminal bonus."""
-    return env.termination_manager.get_term(termination_name).float()
+    try:
+        success = env.termination_manager.get_term(termination_name)
+    except KeyError:
+        success = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    return success.float()
 
 
 def terminal_failure_reward(
@@ -120,7 +124,10 @@ def terminal_failure_reward(
     success_term_name: str = "task_success",
 ) -> torch.Tensor:
     """Emit 1.0 for terminal failures and timeouts, excluding task success."""
-    success = env.termination_manager.get_term(success_term_name)
+    try:
+        success = env.termination_manager.get_term(success_term_name)
+    except KeyError:
+        success = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     return (env.reset_buf & ~success).float()
 
 
