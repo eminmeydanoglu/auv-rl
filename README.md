@@ -87,6 +87,9 @@ c0_90_discovery
 c1_180_inversion
 c2_360_full_turn
 c2a_360_reach
+c2r1_360_reach_light
+c2r2_360_short_settle
+c2r3_360_stable_settle
 c3_720_no_hard_stop
 c4_720_settle
 ```

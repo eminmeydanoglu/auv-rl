@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -22,12 +23,20 @@ def roll_progress(
     env: ManagerBasedRlEnv,
     roll_direction: int,
     target_roll_rad: float,
+    progress_normalization_rad: float | None = None,
     entity_name: str = "robot",
 ) -> torch.Tensor:
     if roll_direction not in (-1, 1):
         raise ValueError(f"roll_direction must be +/-1, got {roll_direction}.")
     if target_roll_rad <= 0.0:
         raise ValueError(f"target_roll_rad must be positive, got {target_roll_rad}.")
+    if progress_normalization_rad is None:
+        progress_normalization_rad = min(float(target_roll_rad), math.pi)
+    if progress_normalization_rad <= 0.0:
+        raise ValueError(
+            "progress_normalization_rad must be positive, "
+            f"got {progress_normalization_rad}."
+        )
 
     state = get_roll_task_state(env, entity_name=entity_name)
 
@@ -42,7 +51,12 @@ def roll_progress(
     )
     bounded_before = torch.minimum(signed_phi_before, target)
     bounded_after = torch.minimum(signed_phi_after, target)
-    bounded_progress_delta = (bounded_after - bounded_before) / target
+    progress_norm = torch.as_tensor(
+        float(progress_normalization_rad),
+        dtype=signed_phi_after.dtype,
+        device=signed_phi_after.device,
+    )
+    bounded_progress_delta = (bounded_after - bounded_before) / progress_norm
     return torch.clamp(bounded_progress_delta, min=0.0)
 
 

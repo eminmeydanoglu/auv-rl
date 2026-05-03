@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from mjlab.utils.lab_api.math import quat_from_euler_xyz
@@ -156,7 +157,7 @@ def test_roll_progress_is_capped_at_target() -> None:
         target_roll_rad=math.radians(360.0),
     )
 
-    assert torch.allclose(progress, torch.tensor([10.0 / 360.0]), atol=1.0e-6)
+    assert torch.allclose(progress, torch.tensor([10.0 / 180.0]), atol=1.0e-6)
 
     env.episode_length_buf[:] = 2
     env.scene["robot"].data.root_link_quat_w = quat_from_euler_xyz(
@@ -172,6 +173,30 @@ def test_roll_progress_is_capped_at_target() -> None:
     )
 
     assert torch.allclose(post_target_progress, torch.zeros_like(post_target_progress))
+
+
+def test_roll_progress_keeps_per_degree_reward_constant_for_large_targets() -> None:
+    values: list[float] = []
+    for target_deg in (180.0, 360.0, 720.0):
+        env = _make_env()
+        get_roll_task_state(env)
+
+        env.episode_length_buf[:] = 1
+        env.scene["robot"].data.root_link_quat_w = quat_from_euler_xyz(
+            torch.tensor([math.radians(10.0)], dtype=torch.float),
+            torch.tensor([0.0], dtype=torch.float),
+            torch.tensor([0.0], dtype=torch.float),
+        )
+
+        progress = mdp.roll_progress(
+            env,
+            roll_direction=1,
+            target_roll_rad=math.radians(target_deg),
+        )
+        values.append(float(progress.item()))
+
+    expected = 10.0 / 180.0
+    assert values == pytest.approx([expected, expected, expected], abs=1.0e-6)
 
 
 def test_action_rate_reward_matches_l2_delta() -> None:

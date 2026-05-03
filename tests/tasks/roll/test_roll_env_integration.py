@@ -120,10 +120,57 @@ def test_roll_curriculum_c2a_reach_stage_adds_attitude_discipline() -> None:
     assert cfg.terminations["excess_pitch"].params["limit_rad"] == math.radians(70.0)
     assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 6.0
     assert cfg.terminations["excess_depth_error"].params["limit_m"] == 1.8
-    assert cfg.terminations["task_success"].params["settle_steps"] == 13
+    assert cfg.terminations["task_success"].params["settle_steps"] == 3
     assert cfg.terminations["task_success"].params[
         "settle_ang_vel_limit_rad_s"
     ] == 2.5
+
+
+def test_roll_curriculum_c2r_stages_progressively_extend_settle() -> None:
+    expected = {
+        "c2r1_360_reach_light": {
+            "settle_steps": 3,
+            "k_prog": 8.0,
+            "k_pitch": 0.6,
+            "terminal_success": 150.0,
+            "excess_xy": 8.0,
+        },
+        "c2r2_360_short_settle": {
+            "settle_steps": 7,
+            "k_prog": 8.0,
+            "k_pitch": 0.8,
+            "terminal_success": 170.0,
+            "excess_xy": 7.0,
+        },
+        "c2r3_360_stable_settle": {
+            "settle_steps": 13,
+            "k_prog": 8.0,
+            "k_pitch": 1.0,
+            "terminal_success": 180.0,
+            "excess_xy": 7.0,
+        },
+    }
+
+    for stage_name, values in expected.items():
+        stage = ROLL_CURRICULUM_STAGES[stage_name]
+        cfg = make_taluy_roll_env_cfg(num_envs=1, curriculum_stage=stage.name)
+
+        assert cfg.episode_length_s == 14.0
+        assert cfg.rewards["roll_progress"].weight == values["k_prog"]
+        assert cfg.rewards["pitch_penalty"].weight == values["k_pitch"]
+        assert cfg.rewards["terminal_success"].weight == values["terminal_success"]
+        assert cfg.terminations["excess_xy_drift"].params["limit_m"] == values[
+            "excess_xy"
+        ]
+        assert cfg.terminations["task_success"].params["target_roll_rad"] == math.radians(
+            360.0
+        )
+        assert cfg.terminations["task_success"].params["settle_steps"] == values[
+            "settle_steps"
+        ]
+        assert cfg.terminations["task_success"].params[
+            "settle_ang_vel_limit_rad_s"
+        ] == 2.5
 
 
 def test_roll_play_inspector_env_cfg_accepts_curriculum_stage() -> None:
