@@ -126,28 +126,47 @@ def test_roll_curriculum_c2a_reach_stage_adds_attitude_discipline() -> None:
     ] == 2.5
 
 
-def test_roll_curriculum_c2r_stages_progressively_extend_settle() -> None:
+def test_roll_curriculum_next_wave_matches_training_plan() -> None:
     expected = {
-        "c2r1_360_reach_light": {
-            "settle_steps": 3,
-            "k_prog": 8.0,
-            "k_pitch": 0.6,
-            "terminal_success": 150.0,
-            "excess_xy": 8.0,
-        },
-        "c2r2_360_short_settle": {
+        "c2b_360_hold_0p05": {
+            "target_deg": 360.0,
+            "episode_s": 14.0,
             "settle_steps": 7,
-            "k_prog": 8.0,
-            "k_pitch": 0.8,
+            "k_prog": 6.0,
+            "k_pitch": 1.5,
             "terminal_success": 170.0,
+            "excess_pitch_deg": 70.0,
+            "excess_xy": 6.0,
+        },
+        "c2c_360_hold_0p10": {
+            "target_deg": 360.0,
+            "episode_s": 14.0,
+            "settle_steps": 13,
+            "k_prog": 6.0,
+            "k_pitch": 1.5,
+            "terminal_success": 180.0,
+            "excess_pitch_deg": 70.0,
+            "excess_xy": 6.0,
+        },
+        "c3a_540_reach_0p05": {
+            "target_deg": 540.0,
+            "episode_s": 17.0,
+            "settle_steps": 7,
+            "k_prog": 6.0,
+            "k_pitch": 1.2,
+            "terminal_success": 170.0,
+            "excess_pitch_deg": 75.0,
             "excess_xy": 7.0,
         },
-        "c2r3_360_stable_settle": {
-            "settle_steps": 13,
-            "k_prog": 8.0,
+        "c3b_720_reach_0p02": {
+            "target_deg": 720.0,
+            "episode_s": 20.0,
+            "settle_steps": 3,
+            "k_prog": 6.0,
             "k_pitch": 1.0,
-            "terminal_success": 180.0,
-            "excess_xy": 7.0,
+            "terminal_success": 170.0,
+            "excess_pitch_deg": 80.0,
+            "excess_xy": 8.0,
         },
     }
 
@@ -155,22 +174,68 @@ def test_roll_curriculum_c2r_stages_progressively_extend_settle() -> None:
         stage = ROLL_CURRICULUM_STAGES[stage_name]
         cfg = make_taluy_roll_env_cfg(num_envs=1, curriculum_stage=stage.name)
 
-        assert cfg.episode_length_s == 14.0
+        assert cfg.episode_length_s == values["episode_s"]
         assert cfg.rewards["roll_progress"].weight == values["k_prog"]
         assert cfg.rewards["pitch_penalty"].weight == values["k_pitch"]
         assert cfg.rewards["terminal_success"].weight == values["terminal_success"]
+        assert cfg.terminations["excess_pitch"].params["limit_rad"] == math.radians(
+            values["excess_pitch_deg"]
+        )
         assert cfg.terminations["excess_xy_drift"].params["limit_m"] == values[
             "excess_xy"
         ]
         assert cfg.terminations["task_success"].params["target_roll_rad"] == math.radians(
-            360.0
+            values["target_deg"]
+        )
+        assert cfg.terminations["task_success"].params["settle_steps"] == values[
+            "settle_steps"
+        ]
+        assert cfg.observations["actor"].terms["phi_total_norm"].params[
+            "target_roll_rad"
+        ] == math.radians(values["target_deg"])
+
+
+def test_roll_curriculum_720_wave_matches_direct_probe_plan() -> None:
+    expected = {
+        "c3c_720_reach_loose_control": {
+            "settle_steps": 3,
+            "k_xy": 0.02,
+            "terminal_success": 170.0,
+        },
+        "c3d_720_reach_xy_moderate": {
+            "settle_steps": 3,
+            "k_xy": 0.06,
+            "terminal_success": 170.0,
+        },
+        "c3e_720_hold_0p05_xy_light": {
+            "settle_steps": 7,
+            "k_xy": 0.04,
+            "terminal_success": 180.0,
+        },
+        "c3f_720_hold_0p10_soft": {
+            "settle_steps": 13,
+            "k_xy": 0.05,
+            "terminal_success": 190.0,
+        },
+    }
+
+    for stage_name, values in expected.items():
+        cfg = make_taluy_roll_env_cfg(num_envs=1, curriculum_stage=stage_name)
+
+        assert cfg.episode_length_s == 20.0
+        assert cfg.rewards["roll_progress"].weight == 6.0
+        assert cfg.rewards["xy_drift"].weight == values["k_xy"]
+        assert cfg.rewards["terminal_success"].weight == values["terminal_success"]
+        assert cfg.terminations["task_success"].params["target_roll_rad"] == math.radians(
+            720.0
         )
         assert cfg.terminations["task_success"].params["settle_steps"] == values[
             "settle_steps"
         ]
         assert cfg.terminations["task_success"].params[
             "settle_ang_vel_limit_rad_s"
-        ] == 2.5
+        ] == 3.5
+        assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 8.0
 
 
 def test_roll_play_inspector_env_cfg_accepts_curriculum_stage() -> None:
