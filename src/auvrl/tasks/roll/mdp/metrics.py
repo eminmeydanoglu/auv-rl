@@ -76,10 +76,57 @@ def xy_drift_m(
     entity_name: str = "robot",
 ) -> torch.Tensor:
     """Return world-frame XY drift magnitude from the reset-time reference."""
+    return torch.linalg.vector_norm(_xy_error_w(env, entity_name=entity_name), dim=1)
+
+
+def _xy_error_w(
+    env: ManagerBasedRlEnv,
+    entity_name: str = "robot",
+) -> torch.Tensor:
+    """Return signed world-frame XY error from the reset-time reference."""
     state = get_roll_task_state(env, entity_name=entity_name)
     robot: Entity = env.scene[entity_name]
     root_pos_w, _quat_wxyz = current_root_pose_from_qpos(robot)
-    return torch.linalg.vector_norm(root_pos_w[:, :2] - state.xy_ref_w, dim=1)
+    return root_pos_w[:, :2] - state.xy_ref_w
+
+
+def x_drift_m(
+    env: ManagerBasedRlEnv,
+    entity_name: str = "robot",
+) -> torch.Tensor:
+    """Return signed world-frame X drift from the reset-time reference."""
+    return _xy_error_w(env, entity_name=entity_name)[:, 0]
+
+
+def y_drift_m(
+    env: ManagerBasedRlEnv,
+    entity_name: str = "robot",
+) -> torch.Tensor:
+    """Return signed world-frame Y drift from the reset-time reference."""
+    return _xy_error_w(env, entity_name=entity_name)[:, 1]
+
+
+class XyDriftPeakM:
+    """Track the peak XY drift reached within each episode."""
+
+    def __init__(self, cfg: object, env: ManagerBasedRlEnv) -> None:
+        del cfg
+        self._peak = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        entity_name: str = "robot",
+    ) -> torch.Tensor:
+        current = xy_drift_m(env, entity_name=entity_name)
+        self._peak = torch.maximum(self._peak, current)
+        return self._peak
+
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        if env_ids is None:
+            self._peak.zero_()
+        else:
+            self._peak[env_ids] = 0.0
 
 
 def pitch_abs_rad(
@@ -172,6 +219,9 @@ __all__ = [
     "settle_counter_s",
     "target_reached",
     "water_current_speed_m_s",
+    "x_drift_m",
+    "XyDriftPeakM",
     "xy_drift_m",
+    "y_drift_m",
     "yaw_abs_error_rad",
 ]

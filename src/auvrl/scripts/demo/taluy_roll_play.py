@@ -80,6 +80,12 @@ DEFAULT_CHECKPOINT_REGEX = "model_.*.pt"
 DEFAULT_RUN_DIR_REGEX = ".*"
 
 
+def _resolve_play_episode_length_s(args: argparse.Namespace) -> float | None:
+    if args.episode_length_s is None and args.curriculum_stage is None:
+        return 300.0
+    return args.episode_length_s
+
+
 def _wrap_angle_rad(angle_rad: float) -> float:
     return (angle_rad + math.pi) % (2.0 * math.pi) - math.pi
 
@@ -112,6 +118,26 @@ def _parse_args() -> argparse.Namespace:
         choices=("manual", "checkpoint"),
         default="manual",
         help="Initial policy source. `checkpoint` requires a loadable roll checkpoint.",
+    )
+    parser.add_argument(
+        "--play-mode",
+        choices=("deployment", "training"),
+        default="deployment",
+        help=(
+            "Playback reset semantics. `deployment` disables task terminations so "
+            "the policy keeps running after target reach/failure, matching real "
+            "vehicle execution. `training` keeps the training/eval done/reset logic."
+        ),
+    )
+    parser.add_argument(
+        "--deployment-completion-action",
+        choices=("zero", "continue"),
+        default="zero",
+        help=(
+            "What the roll specialist does after deployment task completion. "
+            "`zero` disables the controller by sending zero body_wrench actions; "
+            "`continue` leaves the learned policy running for stress inspection."
+        ),
     )
     parser.add_argument(
         "--curriculum-stage",
@@ -192,7 +218,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-terminations",
         action="store_true",
-        help="Disable all terminations for uninterrupted inspection.",
+        help=(
+            "Deprecated alias for `--play-mode deployment`: disable all "
+            "terminations for uninterrupted inspection."
+        ),
     )
     parser.add_argument(
         "--log-jsonl",
@@ -211,6 +240,21 @@ def _parse_args() -> argparse.Namespace:
         help="Enable periodic terminal inspector logs.",
     )
     return parser.parse_args()
+
+
+def _terminations_disabled(args: argparse.Namespace) -> bool:
+    return bool(args.no_terminations or args.play_mode == "deployment")
+
+
+def _get_active_termination_terms(
+    base_env: ManagerBasedRlEnv,
+    env_idx: int,
+) -> dict[str, list[float]]:
+    manager = base_env.termination_manager
+    get_terms = getattr(manager, "get_active_iterable_terms", None)
+    if get_terms is None:
+        return {}
+    return _iterable_terms_to_dict(get_terms(env_idx))
 
 
 def _checkpoint_lookup_requested(args: argparse.Namespace) -> bool:
@@ -321,19 +365,44 @@ def _make_body_velocity_command_cfg() -> UniformBodyVelocityCommandCfg:
 
 
 def _make_roll_inspector_env_cfg(args: argparse.Namespace):
-    episode_length_s = args.episode_length_s
-    if episode_length_s is None and args.curriculum_stage is None:
-        episode_length_s = 300.0
-
     cfg = make_taluy_roll_env_cfg(
         num_envs=args.num_envs,
         curriculum_stage=args.curriculum_stage,
-        episode_length_s=episode_length_s,
+        episode_length_s=_resolve_play_episode_length_s(args),
     )
     cfg.commands["body_velocity"] = _make_body_velocity_command_cfg()
-    if args.no_terminations:
+    if _terminations_disabled(args):
         cfg.terminations = {}
     return cfg
+
+
+def _make_roll_task_monitor_params(args: argparse.Namespace) -> dict[str, Any]:
+    cfg = make_taluy_roll_env_cfg(
+        num_envs=1,
+        curriculum_stage=args.curriculum_stage,
+        episode_length_s=_resolve_play_episode_length_s(args),
+    )
+    task_success = cfg.terminations["task_success"].params
+    excess_pitch = cfg.terminations["excess_pitch"].params
+    excess_depth = cfg.terminations["excess_depth_error"].params
+    excess_xy = cfg.terminations["excess_xy_drift"].params
+    return {
+        "episode_length_s": float(cfg.episode_length_s),
+        "target_roll_rad": float(task_success["target_roll_rad"]),
+        "roll_direction": int(task_success["roll_direction"]),
+        "settle_steps": int(task_success["settle_steps"]),
+        "settle_pitch_limit_rad": float(task_success["settle_pitch_limit_rad"]),
+        "settle_yaw_limit_rad": float(task_success["settle_yaw_limit_rad"]),
+        "settle_ang_vel_limit_rad_s": float(
+            task_success["settle_ang_vel_limit_rad_s"]
+        ),
+        "settle_depth_error_limit_m": float(
+            task_success["settle_depth_error_limit_m"]
+        ),
+        "excess_pitch_limit_rad": float(excess_pitch["limit_rad"]),
+        "excess_depth_error_limit_m": float(excess_depth["limit_m"]),
+        "excess_xy_drift_limit_m": float(excess_xy["limit_m"]),
+    }
 
 
 def _tensor_env_value(value: torch.Tensor, env_idx: int) -> Any:
@@ -611,6 +680,10 @@ class RollInspector:
         verbose: bool,
         policy: SwitchableRollPolicy,
         curriculum_stage: str | None,
+        play_mode: str,
+        terminations_disabled: bool,
+        deployment_completion_action: str,
+        task_monitor_params: dict[str, Any],
     ) -> None:
         self._base_env = base_env
         self._env_idx = env_idx
@@ -626,6 +699,10 @@ class RollInspector:
         self._verbose = bool(verbose)
         self._policy = policy
         self._curriculum_stage = curriculum_stage
+        self._play_mode = play_mode
+        self._terminations_disabled = terminations_disabled
+        self._deployment_completion_action = deployment_completion_action
+        self._task_monitor_params = task_monitor_params
         self._details_html_handle: Any | None = None
         self._policy_status_html_handle: Any | None = None
         self._actor_obs_panel: ScalarBarPanel | None = None
@@ -635,6 +712,14 @@ class RollInspector:
         self._odom_ref_pitch_rad: float | None = None
         self._odom_ref_yaw_rad: float | None = None
         self._last_episode_step: int | None = None
+        self._monitor_target_reached = False
+        self._monitor_settle_counter_steps = 0
+        self._monitor_last_episode_step: int | None = None
+        self._last_task_monitor: dict[str, Any] | None = None
+        self._controller_stopped = False
+        self._controller_stop_reason: list[str] = []
+        self._controller_stop_step: int | None = None
+        self._last_action_zeroed = False
 
         if self._jsonl_path is not None:
             self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)
@@ -645,6 +730,17 @@ class RollInspector:
 
     def set_viewer_frame_rate(self, frame_rate_hz: float) -> None:
         self._viewer_frame_rate_hz = float(frame_rate_hz)
+
+    def apply_controller_completion(self, actions: torch.Tensor) -> torch.Tensor:
+        if (
+            self._play_mode == "deployment"
+            and self._controller_stopped
+            and self._deployment_completion_action == "zero"
+        ):
+            self._last_action_zeroed = True
+            return torch.zeros_like(actions)
+        self._last_action_zeroed = False
+        return actions
 
     def create_viser_gui(self, server: Any) -> None:
         with server.gui.add_folder("Roll Inspector"):
@@ -687,13 +783,21 @@ class RollInspector:
             str(checkpoint_path) if checkpoint_path is not None else "not loaded"
         )
         curriculum_value = self._curriculum_stage or "default_roll_v1"
+        terminations_value = (
+            "disabled (continuous)" if self._terminations_disabled else "enabled"
+        )
+        controller_value = "stopped" if self._controller_stopped else "active"
         return (
             '<div style="padding:0.35em 0.5em;font-family:monospace;'
             'font-size:0.80em;line-height:1.35;color:#dbeafe;'
             'background:rgba(30,41,59,0.65);border-radius:4px;">'
             f"<strong>policy:</strong> {html.escape(self._policy.mode)}<br>"
             f"<strong>checkpoint:</strong> {html.escape(checkpoint_value)}<br>"
-            f"<strong>curriculum:</strong> {html.escape(curriculum_value)}"
+            f"<strong>curriculum:</strong> {html.escape(curriculum_value)}<br>"
+            f"<strong>play_mode:</strong> {html.escape(self._play_mode)}<br>"
+            f"<strong>terminations:</strong> {html.escape(terminations_value)}<br>"
+            f"<strong>completion:</strong> {html.escape(self._deployment_completion_action)}<br>"
+            f"<strong>controller:</strong> {html.escape(controller_value)}"
             "</div>"
         )
 
@@ -780,6 +884,15 @@ class RollInspector:
         ]
         rpy_from_start_deg = [value * 180.0 / math.pi for value in rpy_from_start_rad]
         current_rpy_deg = [value * 180.0 / math.pi for value in current_rpy_rad]
+        task_monitor = self._update_task_monitor(
+            env_idx=env_idx,
+            current_episode_step=current_episode_step,
+            current_pos_w=current_pos_w,
+            current_rpy_rad=current_rpy_rad,
+            state=state,
+            robot=robot,
+        )
+        self._maybe_stop_controller(task_monitor)
 
         obs_terms = self._base_env.observation_manager.get_active_iterable_terms(env_idx)
         actor_obs = _iterable_terms_to_dict(obs_terms, prefix="actor-")
@@ -787,9 +900,7 @@ class RollInspector:
         rewards = _iterable_terms_to_dict(
             self._base_env.reward_manager.get_active_iterable_terms(env_idx)
         )
-        terminations = _iterable_terms_to_dict(
-            self._base_env.termination_manager.get_active_iterable_terms(env_idx)
-        )
+        terminations = _get_active_termination_terms(self._base_env, env_idx)
         physics_dt_s = float(self._base_env.cfg.sim.mujoco.timestep)
         control_dt_s = float(self._base_env.step_dt)
         measured_actual_rt = self._measured_steps_per_wall_s * control_dt_s
@@ -800,6 +911,15 @@ class RollInspector:
             "step": int(self._base_env.common_step_counter),
             "env_idx": env_idx,
             "policy_mode": self._policy.mode,
+            "play_mode": self._play_mode,
+            "terminations_disabled": self._terminations_disabled,
+            "controller": {
+                "completion_action": self._deployment_completion_action,
+                "stopped": self._controller_stopped,
+                "stop_reason": self._controller_stop_reason,
+                "stop_step": self._controller_stop_step,
+                "last_action_zeroed": self._last_action_zeroed,
+            },
             "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
             "curriculum_stage": self._curriculum_stage,
             "rates": {
@@ -873,11 +993,140 @@ class RollInspector:
                     state.settle_counter_steps, env_idx
                 ),
             },
+            "task_monitor": task_monitor,
             "actor_observations": actor_obs,
             "critic_observations": critic_obs,
             "last_step_rewards": rewards,
             "terminations": terminations,
         }
+
+    def _update_task_monitor(
+        self,
+        *,
+        env_idx: int,
+        current_episode_step: int,
+        current_pos_w: list[float],
+        current_rpy_rad: list[float],
+        state: Any,
+        robot: Any,
+    ) -> dict[str, Any]:
+        if (
+            self._monitor_last_episode_step is not None
+            and current_episode_step == self._monitor_last_episode_step
+            and self._last_task_monitor is not None
+        ):
+            return self._last_task_monitor
+
+        if (
+            self._monitor_last_episode_step is not None
+            and current_episode_step < self._monitor_last_episode_step
+        ):
+            self._monitor_target_reached = False
+            self._monitor_settle_counter_steps = 0
+
+        params = self._task_monitor_params
+        step_dt_s = float(self._base_env.step_dt)
+        phi_total_rad = float(state.phi_total_rad[env_idx].item())
+        target_roll_rad = float(params["target_roll_rad"])
+        roll_direction = int(params["roll_direction"])
+        signed_phi_rad = float(roll_direction) * phi_total_rad
+        target_crossed_now = signed_phi_rad >= target_roll_rad
+        self._monitor_target_reached = (
+            self._monitor_target_reached or target_crossed_now
+        )
+
+        xy_ref_w = state.xy_ref_w[env_idx].detach().cpu().tolist()
+        xy_drift_m = math.hypot(
+            current_pos_w[0] - float(xy_ref_w[0]),
+            current_pos_w[1] - float(xy_ref_w[1]),
+        )
+        depth_error_m = current_pos_w[2] - float(state.z_ref_m[env_idx].item())
+        yaw_error_rad = _wrap_angle_rad(
+            current_rpy_rad[2] - float(state.psi_ref_rad[env_idx].item())
+        )
+        ang_vel_b = robot.data.root_link_ang_vel_b[env_idx].detach().cpu().tolist()
+        ang_speed_rad_s = math.sqrt(sum(float(value) ** 2 for value in ang_vel_b))
+
+        settle_mask = (
+            abs(current_rpy_rad[1]) <= float(params["settle_pitch_limit_rad"])
+            and abs(yaw_error_rad) <= float(params["settle_yaw_limit_rad"])
+            and ang_speed_rad_s <= float(params["settle_ang_vel_limit_rad_s"])
+            and abs(depth_error_m) <= float(params["settle_depth_error_limit_m"])
+        )
+        if self._monitor_target_reached and settle_mask:
+            self._monitor_settle_counter_steps += 1
+        else:
+            self._monitor_settle_counter_steps = 0
+
+        would_success = self._monitor_settle_counter_steps >= int(
+            params["settle_steps"]
+        )
+        would_fail_pitch = abs(current_rpy_rad[1]) > float(
+            params["excess_pitch_limit_rad"]
+        )
+        would_fail_depth = abs(depth_error_m) > float(
+            params["excess_depth_error_limit_m"]
+        )
+        would_fail_xy = xy_drift_m > float(params["excess_xy_drift_limit_m"])
+        elapsed_episode_s = current_episode_step * step_dt_s
+        would_timeout = elapsed_episode_s >= float(params["episode_length_s"])
+        would_failure = would_fail_pitch or would_fail_depth or would_fail_xy
+        would_done = would_success or would_failure or would_timeout
+        done_reasons = [
+            name
+            for name, active in (
+                ("task_success", would_success),
+                ("excess_pitch", would_fail_pitch),
+                ("excess_depth_error", would_fail_depth),
+                ("excess_xy_drift", would_fail_xy),
+                ("time_out", would_timeout),
+            )
+            if active
+        ]
+
+        monitor = {
+            "progress_ratio": signed_phi_rad / target_roll_rad,
+            "target_crossed_now": target_crossed_now,
+            "target_reached_sticky": self._monitor_target_reached,
+            "settle_mask": settle_mask,
+            "settle_counter_steps": self._monitor_settle_counter_steps,
+            "settle_counter_s": self._monitor_settle_counter_steps * step_dt_s,
+            "would_success": would_success,
+            "would_failure": would_failure,
+            "would_timeout": would_timeout,
+            "would_done": would_done,
+            "would_done_reasons": done_reasons,
+            "episode_step": current_episode_step,
+            "elapsed_episode_s": elapsed_episode_s,
+            "episode_length_s": float(params["episode_length_s"]),
+            "xy_drift_m": xy_drift_m,
+            "depth_error_m": depth_error_m,
+            "pitch_abs_rad": abs(current_rpy_rad[1]),
+            "yaw_error_abs_rad": abs(yaw_error_rad),
+            "ang_speed_rad_s": ang_speed_rad_s,
+        }
+        self._monitor_last_episode_step = current_episode_step
+        self._last_task_monitor = monitor
+        return monitor
+
+    def _maybe_stop_controller(self, task_monitor: dict[str, Any]) -> None:
+        if self._play_mode != "deployment":
+            return
+        if self._deployment_completion_action != "zero":
+            return
+        if self._controller_stopped:
+            return
+        if not bool(task_monitor["would_done"]):
+            return
+
+        self._controller_stopped = True
+        reasons = task_monitor["would_done_reasons"]
+        if isinstance(reasons, list) and reasons:
+            self._controller_stop_reason = [str(reason) for reason in reasons]
+        else:
+            self._controller_stop_reason = ["would_done"]
+        self._controller_stop_step = int(task_monitor["episode_step"])
+        self._update_policy_status()
 
     def _print_snapshot(self, snapshot: dict[str, Any]) -> None:
         rates = snapshot["rates"]
@@ -885,6 +1134,9 @@ class RollInspector:
             "[roll-inspector] "
             f"step={snapshot['step']} env={snapshot['env_idx']} "
             f"policy={snapshot['policy_mode']} "
+            f"play_mode={snapshot['play_mode']} "
+            f"terminations_disabled={snapshot['terminations_disabled']} "
+            f"controller={snapshot['controller']} "
             f"rt={rates['measured_actual_rt']:.3f} "
             f"obs_wall_hz={rates['measured_observation_hz_wall']:.1f} "
             f"command_b={snapshot['command_b']} "
@@ -893,6 +1145,8 @@ class RollInspector:
             f"policy_wrench_b={snapshot['policy_wrench_b']} "
             f"last_sat_frac={snapshot['thruster_saturation_fraction']:.3f} "
             f"phi_total_rad={snapshot['roll_state']['phi_total_rad']:.5f} "
+            f"would_done={snapshot['task_monitor']['would_done']} "
+            f"would_done_reasons={snapshot['task_monitor']['would_done_reasons']} "
             f"rewards={snapshot['last_step_rewards']} "
             f"terminations={snapshot['terminations']}"
         )
@@ -914,6 +1168,8 @@ class RollInspector:
 
         command_action = {
             "policy_mode": snapshot["policy_mode"],
+            "play_mode": snapshot["play_mode"],
+            "terminations_disabled": snapshot["terminations_disabled"],
             "command_b": snapshot["command_b"],
             "lin_vel_b": snapshot["lin_vel_b"],
             "ang_vel_b": snapshot["ang_vel_b"],
@@ -937,15 +1193,21 @@ class RollInspector:
                 "Policy",
                 {
                     "policy_mode": snapshot["policy_mode"],
+                    "play_mode": snapshot["play_mode"],
+                    "terminations_disabled": snapshot["terminations_disabled"],
+                    "controller_stopped": snapshot["controller"]["stopped"],
+                    "controller_stop_reason": snapshot["controller"]["stop_reason"],
                     "checkpoint_path": snapshot["checkpoint_path"],
                     "curriculum_stage": snapshot["curriculum_stage"]
                     or "default_roll_v1",
                 },
             ),
             self._html_kv_section("Rates", rate_values),
+            self._html_kv_section("Controller", snapshot["controller"]),
             self._html_kv_section("Odometry", snapshot["odometry"]),
             self._html_kv_section("Command / Action", command_action),
             self._html_kv_section("Roll State", snapshot["roll_state"]),
+            self._html_kv_section("Task Monitor", snapshot["task_monitor"]),
             self._html_kv_section("Last Step Rewards", snapshot["last_step_rewards"]),
             self._html_kv_section("Terminations", snapshot["terminations"]),
         ]
@@ -1005,6 +1267,7 @@ class InspectablePolicy:
 
     def __call__(self, obs: object) -> torch.Tensor:
         actions = self._base_policy(obs)
+        actions = self._inspector.apply_controller_completion(actions)
         self._inspector.maybe_emit(actions)
         return actions
 
@@ -1038,6 +1301,7 @@ class RollInspectorViserPlayViewer(ViserPlayViewer):
             with torch.no_grad():
                 obs = self.env.get_observations()
                 actions = self.policy(obs)
+                actions = self._roll_inspector.apply_controller_completion(actions)
                 self.env.step(actions)
                 self._step_count += 1
                 self._stats_steps += 1
@@ -1084,6 +1348,7 @@ def _run_dry_steps(
     for _ in range(num_steps):
         obs = env.get_observations()
         actions = policy(obs)
+        actions = inspector.apply_controller_completion(actions)
         _, reward, _, _ = env.step(actions)
         inspector.maybe_emit(actions, force=True)
 
@@ -1093,7 +1358,15 @@ def _run_dry_steps(
     print("Dry-run complete.")
     print(f"  command_b={command.detach().cpu()[0].tolist()}")
     print(f"  reward={reward.detach().cpu().tolist()}")
+    print(f"  play_mode={snapshot['play_mode']}")
+    print(f"  terminations_disabled={snapshot['terminations_disabled']}")
+    print(f"  controller={snapshot['controller']}")
     print(f"  final_rpy_rad={snapshot['euler_rpy_rad']}")
+    print(f"  phi_total_rad={snapshot['roll_state']['phi_total_rad']}")
+    print(f"  target_reached={snapshot['roll_state']['target_reached']}")
+    print(f"  settle_counter_steps={snapshot['roll_state']['settle_counter_steps']}")
+    print(f"  task_monitor={snapshot['task_monitor']}")
+    print(f"  terminations={snapshot['terminations']}")
     if inspector.jsonl_path is not None:
         print(f"  jsonl={inspector.jsonl_path}")
 
@@ -1129,6 +1402,7 @@ def main() -> None:
     args = _parse_args()
     device = _resolve_device(args.device)
     viewer = _resolve_viewer(args.viewer)
+    terminations_disabled = _terminations_disabled(args)
     checkpoint_required = args.policy == "checkpoint"
     checkpoint_path: Path | None = None
     agent_cfg_dict: dict[str, Any] | None = None
@@ -1202,6 +1476,10 @@ def main() -> None:
         verbose=args.verbose,
         policy=policy,
         curriculum_stage=args.curriculum_stage,
+        play_mode=args.play_mode,
+        terminations_disabled=terminations_disabled,
+        deployment_completion_action=args.deployment_completion_action,
+        task_monitor_params=_make_roll_task_monitor_params(args),
     )
 
     fixed_command = (
@@ -1227,6 +1505,11 @@ def main() -> None:
 
         print(f"Taluy roll interactive inspector | device={device} viewer={viewer}")
         print(f"Policy: {policy.mode}")
+        print(
+            f"Play mode: {args.play_mode} "
+            f"(terminations {'disabled' if terminations_disabled else 'enabled'})"
+        )
+        print(f"Deployment completion action: {args.deployment_completion_action}")
         if checkpoint_path is not None:
             print(f"Loaded checkpoint: {checkpoint_path}")
         else:

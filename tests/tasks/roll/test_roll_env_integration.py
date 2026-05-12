@@ -43,6 +43,10 @@ def test_roll_env_cfg_api_and_reset_state() -> None:
         "settle_counter_s_last",
         "depth_abs_error_m",
         "xy_drift_m",
+        "xy_drift_m_last",
+        "x_drift_m_last",
+        "y_drift_m_last",
+        "xy_drift_m_peak",
         "pitch_abs_rad",
         "yaw_abs_error_rad",
         "root_ang_speed_rad_s",
@@ -245,6 +249,7 @@ def test_roll_play_inspector_env_cfg_accepts_curriculum_stage() -> None:
         curriculum_stage=stage.name,
         episode_length_s=None,
         no_terminations=False,
+        play_mode="training",
     )
 
     cfg = taluy_roll_play._make_roll_inspector_env_cfg(args)
@@ -255,6 +260,70 @@ def test_roll_play_inspector_env_cfg_accepts_curriculum_stage() -> None:
         stage.target_roll_deg
     )
     assert "body_velocity" in cfg.commands
+
+
+def test_roll_play_inspector_env_cfg_defaults_to_deployment_continuous_mode() -> None:
+    stage = ROLL_CURRICULUM_STAGES["c3e_720_hold_0p05_xy_light"]
+    args = argparse.Namespace(
+        num_envs=1,
+        curriculum_stage=stage.name,
+        episode_length_s=None,
+        no_terminations=False,
+        play_mode="deployment",
+    )
+
+    cfg = taluy_roll_play._make_roll_inspector_env_cfg(args)
+
+    assert cfg.episode_length_s == stage.episode_length_s
+    assert cfg.terminations == {}
+    assert "body_velocity" in cfg.commands
+
+
+def test_roll_play_no_terminations_alias_still_disables_training_terms() -> None:
+    args = argparse.Namespace(
+        num_envs=1,
+        curriculum_stage="c0_90_discovery",
+        episode_length_s=None,
+        no_terminations=True,
+        play_mode="training",
+    )
+
+    cfg = taluy_roll_play._make_roll_inspector_env_cfg(args)
+
+    assert cfg.terminations == {}
+
+
+def test_roll_play_deployment_stopped_controller_zeroes_actions() -> None:
+    import torch
+
+    inspector = taluy_roll_play.RollInspector.__new__(taluy_roll_play.RollInspector)
+    inspector._play_mode = "deployment"
+    inspector._controller_stopped = True
+    inspector._deployment_completion_action = "zero"
+    inspector._last_action_zeroed = False
+
+    actions = torch.ones((2, 6))
+    filtered = inspector.apply_controller_completion(actions)
+
+    assert torch.equal(filtered, torch.zeros_like(actions))
+    assert torch.equal(actions, torch.ones((2, 6)))
+    assert inspector._last_action_zeroed
+
+
+def test_roll_play_completion_continue_keeps_actions_after_would_done() -> None:
+    import torch
+
+    inspector = taluy_roll_play.RollInspector.__new__(taluy_roll_play.RollInspector)
+    inspector._play_mode = "deployment"
+    inspector._controller_stopped = True
+    inspector._deployment_completion_action = "continue"
+    inspector._last_action_zeroed = True
+
+    actions = torch.ones((2, 6))
+    filtered = inspector.apply_controller_completion(actions)
+
+    assert filtered is actions
+    assert not inspector._last_action_zeroed
 
 
 def test_roll_play_checkpoint_helpers_prefer_direct_path(tmp_path) -> None:

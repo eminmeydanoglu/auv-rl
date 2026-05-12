@@ -8,6 +8,7 @@ from .observations import (
     xy_error_w,
 )
 from .metrics import (
+    XyDriftPeakM,
     body_wrench_action_l2,
     body_wrench_saturation_fraction,
     depth_abs_error_m,
@@ -19,7 +20,9 @@ from .metrics import (
     settle_counter_s,
     target_reached,
     water_current_speed_m_s,
+    x_drift_m,
     xy_drift_m,
+    y_drift_m,
     yaw_abs_error_rad,
 )
 from .rewards import (
@@ -67,9 +70,12 @@ __all__ = [
     "terminal_failure_reward",
     "terminal_success_reward",
     "water_current_speed_m_s",
+    "x_drift_m",
+    "XyDriftPeakM",
     "xy_drift_m",
     "xy_drift_penalty",
     "xy_error_w",
+    "y_drift_m",
     "yaw_abs_error_rad",
     "yaw_hold_penalty",
 ]

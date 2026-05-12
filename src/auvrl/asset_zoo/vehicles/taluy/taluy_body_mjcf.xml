@@ -3,13 +3,13 @@
         <freejoint name="taluy_joint"/>
 
         <!--
-          Inertial values mapped from the latest Taluy rigid-body 6x6 matrix.
+          Inertial values mapped from the corrected Taluy rigid-body 6x6 matrix.
           COM offset is derived from translation-rotation coupling terms.
         -->
         <inertial
-            pos="0 0 -0.02"
+            pos="-0.020893 0.014748 -0.051290"
             mass="29.8419"
-            fullinertia="0.931063 2.108063 2.180000 -0.031700 0.129000 -0.107000"
+            fullinertia="0.858005 2.028468 2.160482 -0.040895 0.160980 -0.129573"
         />
         <geom name="taluy_geom" type="mesh" mesh="taluy_body_mesh" rgba="0.2 0.2 0.25 0.7"/>
 
