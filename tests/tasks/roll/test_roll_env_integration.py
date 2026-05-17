@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import math
 from typing import Any, cast
 
@@ -11,7 +10,6 @@ from auvrl import (
     make_taluy_roll_env_cfg,
     taluy_roll_ppo_runner_cfg,
 )
-from auvrl.scripts.demo import taluy_roll_play
 from auvrl.scripts.smoke import taluy_roll_env as roll_smoke
 from auvrl.scripts.smoke import taluy_velocity_env as velocity_smoke
 from auvrl.tasks.roll.runtime import get_roll_task_state
@@ -240,132 +238,6 @@ def test_roll_curriculum_720_wave_matches_direct_probe_plan() -> None:
             "settle_ang_vel_limit_rad_s"
         ] == 3.5
         assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 8.0
-
-
-def test_roll_play_inspector_env_cfg_accepts_curriculum_stage() -> None:
-    stage = ROLL_CURRICULUM_STAGES["c0_90_discovery"]
-    args = argparse.Namespace(
-        num_envs=1,
-        curriculum_stage=stage.name,
-        episode_length_s=None,
-        no_terminations=False,
-        play_mode="training",
-    )
-
-    cfg = taluy_roll_play._make_roll_inspector_env_cfg(args)
-
-    assert cfg.episode_length_s == stage.episode_length_s
-    assert cfg.rewards["roll_progress"].weight == stage.k_prog
-    assert cfg.terminations["task_success"].params["target_roll_rad"] == math.radians(
-        stage.target_roll_deg
-    )
-    assert "body_velocity" in cfg.commands
-
-
-def test_roll_play_inspector_env_cfg_defaults_to_deployment_continuous_mode() -> None:
-    stage = ROLL_CURRICULUM_STAGES["c3e_720_hold_0p05_xy_light"]
-    args = argparse.Namespace(
-        num_envs=1,
-        curriculum_stage=stage.name,
-        episode_length_s=None,
-        no_terminations=False,
-        play_mode="deployment",
-    )
-
-    cfg = taluy_roll_play._make_roll_inspector_env_cfg(args)
-
-    assert cfg.episode_length_s == stage.episode_length_s
-    assert cfg.terminations == {}
-    assert "body_velocity" in cfg.commands
-
-
-def test_roll_play_no_terminations_alias_still_disables_training_terms() -> None:
-    args = argparse.Namespace(
-        num_envs=1,
-        curriculum_stage="c0_90_discovery",
-        episode_length_s=None,
-        no_terminations=True,
-        play_mode="training",
-    )
-
-    cfg = taluy_roll_play._make_roll_inspector_env_cfg(args)
-
-    assert cfg.terminations == {}
-
-
-def test_roll_play_deployment_stopped_controller_zeroes_actions() -> None:
-    import torch
-
-    inspector = taluy_roll_play.RollInspector.__new__(taluy_roll_play.RollInspector)
-    inspector._play_mode = "deployment"
-    inspector._controller_stopped = True
-    inspector._deployment_completion_action = "zero"
-    inspector._last_action_zeroed = False
-
-    actions = torch.ones((2, 6))
-    filtered = inspector.apply_controller_completion(actions)
-
-    assert torch.equal(filtered, torch.zeros_like(actions))
-    assert torch.equal(actions, torch.ones((2, 6)))
-    assert inspector._last_action_zeroed
-
-
-def test_roll_play_completion_continue_keeps_actions_after_would_done() -> None:
-    import torch
-
-    inspector = taluy_roll_play.RollInspector.__new__(taluy_roll_play.RollInspector)
-    inspector._play_mode = "deployment"
-    inspector._controller_stopped = True
-    inspector._deployment_completion_action = "continue"
-    inspector._last_action_zeroed = True
-
-    actions = torch.ones((2, 6))
-    filtered = inspector.apply_controller_completion(actions)
-
-    assert filtered is actions
-    assert not inspector._last_action_zeroed
-
-
-def test_roll_play_checkpoint_helpers_prefer_direct_path(tmp_path) -> None:
-    checkpoint_path = tmp_path / "model_0.pt"
-    checkpoint_path.write_bytes(b"placeholder")
-    args = argparse.Namespace(
-        policy="manual",
-        checkpoint_file=checkpoint_path,
-        experiment_name="ignored",
-        run_dir="ignored",
-        checkpoint="ignored",
-    )
-
-    assert taluy_roll_play._checkpoint_lookup_requested(args)
-    assert taluy_roll_play._resolve_checkpoint_path(args) == checkpoint_path.resolve()
-    assert (
-        taluy_roll_play._load_agent_cfg_dict(checkpoint_path)["experiment_name"]
-        == taluy_roll_ppo_runner_cfg().experiment_name
-    )
-
-
-def test_switchable_roll_policy_uses_selected_callable() -> None:
-    import torch
-
-    def manual_policy(_obs):
-        return torch.zeros((1, 6))
-
-    def checkpoint_policy(_obs):
-        return torch.ones((1, 6))
-
-    policy = taluy_roll_play.SwitchableRollPolicy(
-        manual_policy=manual_policy,
-        checkpoint_policy=checkpoint_policy,
-        mode="manual",
-        checkpoint_path=None,
-    )
-
-    assert policy.mode == "manual"
-    assert torch.equal(policy(object()), torch.zeros((1, 6)))
-    policy.set_mode("checkpoint")
-    assert policy.mode == "checkpoint"
-    assert torch.equal(policy(object()), torch.ones((1, 6)))
 
 
 def test_roll_smoke_script_runs() -> None:

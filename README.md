@@ -1,6 +1,6 @@
 # AUVRL
 
-AUVRL is a codebase for training underwater robot control policies in MJLab/MuJoCo. It includes the robot [Taluy](https://auv.itu.edu.tr/vehicle-taluy.html), with training environments for a 6-DoF velocity controller and a roll-maneuver specialist controller (for this [task](https://robonation.gitbook.io/robosub-resources/section-3-autonomy-challenge/3.2-task-descriptions#:~:text=Figure%20%3A%20Heading%20Out-,3.2.2%20Task%201%20%2D%20Begin%20Assessment%20(Gate),-Head%20out%20to) in RoboSub). Robot model, actuator/thruster code, task definitions, PPO configs, training scripts, curriculums/ data randomization, playback and debug tools in one place.
+AUVRL is a codebase for training underwater robot control policies in MJLab/MuJoCo. It includes the robot [Taluy](https://auv.itu.edu.tr/vehicle-taluy.html), with training environments for a 6-DoF velocity controller and a roll-maneuver specialist controller (for this [task](https://robonation.gitbook.io/robosub-resources/section-3-autonomy-challenge/3.2-task-descriptions#:~:text=Figure%20%3A%20Heading%20Out-,3.2.2%20Task%201%20%2D%20Begin%20Assessment%20(Gate),-Head%20out%20to) in RoboSub). Robot model, actuator/thruster code, task definitions, PPO configs, training scripts, and curriculums/data randomization live in one place.
 
 
 
@@ -20,36 +20,6 @@ Run an environment check:
 uv run python -m auvrl.scripts.smoke.taluy_roll_env
 uv run python -m auvrl.scripts.smoke.taluy_velocity_env
 ```
-
-
-
-## Play And Inspect
-
-It is easy to visually test how good the agent is performing.
-
-![Taluy roll policy demo](docs/media/balerina.webp)
-
-
-
-Play a trained checkpoint:
-
-```bash
-uv run python -m auvrl.scripts.demo.taluy_roll_play \
-  --policy checkpoint \
-  --checkpoint-file logs/rsl_rl/taluy_roll_v1/<run>/model_*.pt \
-  --viewer viser
-```
-
-Or just pop up the simulation and send manual control inputs - to debug observations, rewards and to see how the robot behaves.
-
-```bash
-uv run python -m auvrl.scripts.demo.taluy_roll_play \
-  --curriculum-stage c0_90_discovery \
-  --policy manual \
-  --viewer viser
-```
-
-
 
 ## Train
 
