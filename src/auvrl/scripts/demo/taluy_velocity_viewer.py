@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 import inspect
+import math
 import os
 from pathlib import Path
 from typing import Any, cast
@@ -51,6 +52,11 @@ from auvrl.config.auv_cfg import (  # noqa: E402  # type: ignore[import-not-foun
     TALUY_CFG_PATH,
     load_auv_cfg,
 )
+from auvrl.scripts.demo._odometry_panel import (  # noqa: E402
+    OdometryTelemetryPolicy,
+    format_vec,
+    quat_wxyz_to_euler_deg,
+)
 
 
 def _resolve_device(device: str) -> str:
@@ -82,18 +88,34 @@ def _build_viser_server(host: str, port: int):
 def _run_viser_viewer(
     env: RslRlVecEnvWrapper,
     policy: Callable[[object], torch.Tensor],
+    base_env: ManagerBasedRlEnv,
     host: str,
     port: int,
+    odometry_period_s: float,
 ) -> None:
     params = inspect.signature(ViserPlayViewer.__init__).parameters
 
     if "viser_server" in params:
         server = _build_viser_server(host, port)
+        if odometry_period_s > 0.0:
+            policy = OdometryTelemetryPolicy(
+                policy,
+                base_env,
+                period_steps=max(int(round(odometry_period_s / base_env.step_dt)), 1),
+                server=server,
+            )
         ViserPlayViewer(env, cast(Any, policy), viser_server=server).run()  # type: ignore[call-arg]
         return
 
     if "server" in params:
         server = _build_viser_server(host, port)
+        if odometry_period_s > 0.0:
+            policy = OdometryTelemetryPolicy(
+                policy,
+                base_env,
+                period_steps=max(int(round(odometry_period_s / base_env.step_dt)), 1),
+                server=server,
+            )
         ViserPlayViewer(env, cast(Any, policy), server=server).run()  # type: ignore[call-arg]
         return
 
@@ -195,6 +217,9 @@ class InspectablePolicy:
 
             lin_vel = robot.data.root_link_lin_vel_b[0].detach().cpu().tolist()
             ang_vel = robot.data.root_link_ang_vel_b[0].detach().cpu().tolist()
+            pos_w = robot.data.root_link_pos_w[0].detach().cpu().tolist()
+            rpy_deg = quat_wxyz_to_euler_deg(robot.data.root_link_quat_w[0])
+            ang_vel_deg_s = [math.degrees(float(value)) for value in ang_vel]
             desired_wrench = wrench_term.desired_wrench_b[0].detach().cpu().tolist()
             max_thruster = float(wrench_term.thruster_targets[0].abs().max().item())
             saturation_fraction = float(wrench_term.step_saturation_fraction[0].item())
@@ -202,7 +227,8 @@ class InspectablePolicy:
             print(
                 "[live] "
                 f"command_b={command[0].detach().cpu().tolist()} "
-                f"lin_vel_b={lin_vel} ang_vel_b={ang_vel} "
+                f"pos_w={format_vec(pos_w)} rpy_deg={format_vec(rpy_deg, 2)} "
+                f"lin_vel_b={lin_vel} ang_vel_b_deg_s={format_vec(ang_vel_deg_s, 2)} "
                 f"policy_action={actions[0].detach().cpu().tolist()} "
                 f"policy_wrench_b={policy_wrench[0].detach().cpu().tolist()} "
                 f"last_applied_wrench_b={desired_wrench} "
@@ -254,6 +280,8 @@ def _run_dry_steps(
     print(f"  command_b={command.detach().cpu()[0].tolist()}")
     print(f"  lin_vel_b={lin_vel}")
     print(f"  ang_vel_b={ang_vel}")
+    print(f"  pos_w={robot.data.root_link_pos_w.detach().cpu()[0].tolist()}")
+    print(f"  rpy_deg={list(quat_wxyz_to_euler_deg(robot.data.root_link_quat_w[0]))}")
     print(f"  reward={reward.detach().cpu().tolist()}")
 
 
@@ -325,6 +353,12 @@ def main() -> None:
         default=1.0,
         help="Live print period. Set <=0 to disable console prints.",
     )
+    parser.add_argument(
+        "--odometry-period-s",
+        type=float,
+        default=0.2,
+        help="Viser odometry panel update period. Set <=0 to disable the panel.",
+    )
     args = parser.parse_args()
 
     device = _resolve_device(args.device)
@@ -388,7 +422,14 @@ def main() -> None:
         if viewer == "native":
             NativeMujocoViewer(env, policy).run()
         else:
-            _run_viser_viewer(env, policy, args.viser_host, args.viser_port)
+            _run_viser_viewer(
+                env,
+                policy,
+                base_env,
+                args.viser_host,
+                args.viser_port,
+                args.odometry_period_s,
+            )
     finally:
         env.close()
 
