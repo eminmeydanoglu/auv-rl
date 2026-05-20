@@ -121,6 +121,49 @@ def body_wrench_action_rate_l2(
     return torch.sum(torch.square(delta_action), dim=1)
 
 
+def body_wrench_action_effort(
+    env: ManagerBasedRlEnv,
+    action_name: str = "body_wrench",
+) -> torch.Tensor:
+    """Return mean squared normalized body-wrench action as an effort cost."""
+    action_slice = action_term_slice(env, action_name)
+    action = env.action_manager.action[:, action_slice]
+    return torch.mean(torch.square(action), dim=1)
+
+
+def thruster_saturation_cost(
+    env: ManagerBasedRlEnv,
+    action_name: str = "body_wrench",
+    threshold: float = 0.85,
+    max_thruster_n: float | None = None,
+) -> torch.Tensor:
+    """Return a soft cost for thruster targets above a normalized threshold."""
+    if not 0.0 <= threshold < 1.0:
+        raise ValueError(f"threshold must be in [0, 1), got {threshold}.")
+
+    term = env.action_manager.get_term(action_name)
+    thruster_targets = getattr(term, "thruster_targets", None)
+    if thruster_targets is None:
+        return torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+
+    if max_thruster_n is None:
+        max_thruster_n = getattr(
+            getattr(term, "cfg", None),
+            "site_force_limit_n",
+            None,
+        )
+    if max_thruster_n is None:
+        max_thruster_n = torch.max(thruster_targets.abs()).detach().clamp_min(1.0e-6)
+    limit = torch.as_tensor(
+        max_thruster_n,
+        dtype=thruster_targets.dtype,
+        device=thruster_targets.device,
+    ).clamp_min(1.0e-6)
+    normalized = thruster_targets.abs() / limit
+    excess = torch.clamp(normalized - float(threshold), min=0.0)
+    return torch.mean(torch.square(excess), dim=1)
+
+
 def terminal_success_reward(
     env: ManagerBasedRlEnv,
     termination_name: str = "task_success",
@@ -146,12 +189,14 @@ def terminal_failure_reward(
 
 
 __all__ = [
+    "body_wrench_action_effort",
     "body_wrench_action_rate_l2",
     "depth_hold_penalty",
     "pitch_penalty",
     "roll_progress",
     "terminal_failure_reward",
     "terminal_success_reward",
+    "thruster_saturation_cost",
     "xy_drift_penalty",
     "yaw_hold_penalty",
 ]

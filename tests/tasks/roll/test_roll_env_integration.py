@@ -240,6 +240,35 @@ def test_roll_curriculum_720_wave_matches_direct_probe_plan() -> None:
         assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 8.0
 
 
+def test_roll_curriculum_low_saturation_experiments_match_plan() -> None:
+    expected_sat_weights = {
+        "c3i_720_hold_0p10_sat005": 0.05,
+        "c3i_720_hold_0p10_sat010": 0.10,
+        "c3i_720_hold_0p10_sat020": 0.20,
+    }
+
+    for stage_name, sat_weight in expected_sat_weights.items():
+        stage = ROLL_CURRICULUM_STAGES[stage_name]
+        cfg = make_taluy_roll_env_cfg(num_envs=1, curriculum_stage=stage_name)
+
+        assert cfg.episode_length_s == 20.0
+        assert cfg.rewards["roll_progress"].weight == 6.0
+        assert cfg.rewards["xy_drift"].weight == 0.15
+        assert cfg.rewards["action_smoothness"].weight == -0.010
+        assert cfg.rewards["action_effort"].weight == -0.003
+        assert cfg.rewards["thruster_saturation"].weight == -sat_weight
+        assert cfg.rewards["thruster_saturation"].params["threshold"] == 0.85
+        assert stage.k_thruster_saturation == sat_weight
+        assert cfg.terminations["task_success"].params["target_roll_rad"] == math.radians(
+            720.0
+        )
+        assert cfg.terminations["task_success"].params["settle_steps"] == 13
+        assert cfg.terminations["task_success"].params[
+            "settle_ang_vel_limit_rad_s"
+        ] == 2.0
+        assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 2.5
+
+
 def test_roll_smoke_script_runs() -> None:
     roll_smoke.main()
 

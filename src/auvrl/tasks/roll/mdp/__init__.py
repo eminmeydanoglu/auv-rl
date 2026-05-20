@@ -26,12 +26,14 @@ from .metrics import (
     yaw_abs_error_rad,
 )
 from .rewards import (
+    body_wrench_action_effort,
     body_wrench_action_rate_l2,
     depth_hold_penalty,
     pitch_penalty,
     roll_progress,
     terminal_failure_reward,
     terminal_success_reward,
+    thruster_saturation_cost,
     xy_drift_penalty,
     yaw_hold_penalty,
 )
@@ -47,6 +49,7 @@ __all__ = [
     "base_lin_vel",
     "base_quat_wxyz",
     "body_wrench_action_l2",
+    "body_wrench_action_effort",
     "body_wrench_action_rate_l2",
     "body_wrench_saturation_fraction",
     "depth_abs_error_m",
@@ -69,6 +72,7 @@ __all__ = [
     "target_reached",
     "terminal_failure_reward",
     "terminal_success_reward",
+    "thruster_saturation_cost",
     "water_current_speed_m_s",
     "x_drift_m",
     "XyDriftPeakM",

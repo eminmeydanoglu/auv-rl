@@ -21,11 +21,25 @@ class DummyTerminationManager:
 
 
 class DummyActionManager:
-    def __init__(self, action: torch.Tensor, prev_action: torch.Tensor):
+    def __init__(
+        self,
+        action: torch.Tensor,
+        prev_action: torch.Tensor,
+        thruster_targets: torch.Tensor,
+    ):
         self.action = action
         self.prev_action = prev_action
         self.active_terms = ["hydro", "body_wrench"]
         self.action_term_dim = [0, action.shape[1]]
+        self._body_wrench_term = SimpleNamespace(
+            cfg=SimpleNamespace(site_force_limit_n=60.0),
+            thruster_targets=thruster_targets,
+        )
+
+    def get_term(self, name: str) -> SimpleNamespace:
+        if name != "body_wrench":
+            raise KeyError(name)
+        return self._body_wrench_term
 
 
 class DummyEnv:
@@ -56,7 +70,16 @@ class DummyEnv:
                 )
             )
         }
-        self.action_manager = DummyActionManager(action=action, prev_action=prev_action)
+        thruster_targets = torch.tensor(
+            [[0.0, 48.0, 54.0, 60.0, -60.0, 30.0, 0.0, 0.0]],
+            dtype=torch.float,
+            device=quat_wxyz.device,
+        ).repeat(self.num_envs, 1)
+        self.action_manager = DummyActionManager(
+            action=action,
+            prev_action=prev_action,
+            thruster_targets=thruster_targets,
+        )
         self.termination_manager = DummyTerminationManager(
             {
                 "task_success": torch.zeros(
@@ -203,6 +226,18 @@ def test_action_rate_reward_matches_l2_delta() -> None:
     env = _make_env()
     value = mdp.body_wrench_action_rate_l2(env)
     assert torch.allclose(value, torch.tensor([0.09]))
+
+
+def test_action_effort_reward_uses_mean_squared_action() -> None:
+    env = _make_env()
+    value = mdp.body_wrench_action_effort(env)
+    assert torch.allclose(value, torch.tensor([0.015]))
+
+
+def test_thruster_saturation_cost_penalizes_only_threshold_excess() -> None:
+    env = _make_env()
+    value = mdp.thruster_saturation_cost(env, threshold=0.8)
+    assert torch.allclose(value, torch.tensor([0.01125]), atol=1.0e-6)
 
 
 def test_terminal_rewards_read_termination_results() -> None:

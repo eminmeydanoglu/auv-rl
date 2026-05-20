@@ -27,6 +27,9 @@ def make_roll_env_cfg(
     k_yaw: float = 0.5,
     k_depth: float = 1.0,
     k_smooth: float = 0.01,
+    k_action_effort: float = 0.0,
+    k_thruster_saturation: float = 0.0,
+    thruster_saturation_threshold: float = 0.85,
     excess_pitch_deg: float = 80.0,
     excess_depth_error_m: float = 1.0,
     excess_xy_drift_m: float = 1.0,
@@ -44,6 +47,20 @@ def make_roll_env_cfg(
         raise ValueError(f"roll_direction must be +/-1, got {roll_direction}.")
     if settle_window_s <= 0.0:
         raise ValueError(f"settle_window_s must be positive, got {settle_window_s}.")
+    if k_action_effort < 0.0:
+        raise ValueError(
+            f"k_action_effort must be non-negative, got {k_action_effort}."
+        )
+    if k_thruster_saturation < 0.0:
+        raise ValueError(
+            "k_thruster_saturation must be non-negative, "
+            f"got {k_thruster_saturation}."
+        )
+    if not 0.0 <= thruster_saturation_threshold < 1.0:
+        raise ValueError(
+            "thruster_saturation_threshold must be in [0, 1), "
+            f"got {thruster_saturation_threshold}."
+        )
 
     cfg = robot_base_env_cfg
     cfg.commands = {}
@@ -132,6 +149,21 @@ def make_roll_env_cfg(
             params={"success_term_name": "task_success"},
         ),
     }
+    if k_action_effort > 0.0:
+        cfg.rewards["action_effort"] = RewardTermCfg(
+            func=mdp.body_wrench_action_effort,
+            weight=-k_action_effort,
+            params={"action_name": "body_wrench"},
+        )
+    if k_thruster_saturation > 0.0:
+        cfg.rewards["thruster_saturation"] = RewardTermCfg(
+            func=mdp.thruster_saturation_cost,
+            weight=-k_thruster_saturation,
+            params={
+                "action_name": "body_wrench",
+                "threshold": thruster_saturation_threshold,
+            },
+        )
 
     cfg.metrics = {
         "roll_progress_ratio_last": MetricsTermCfg(
