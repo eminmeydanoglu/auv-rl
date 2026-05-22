@@ -27,6 +27,7 @@ class RollCurriculumStage:
     settle_yaw_limit_deg: float
     settle_ang_vel_limit_rad_s: float
     settle_depth_error_limit_m: float
+    settle_xy_drift_limit_m: float | None = None
     terminal_success_weight: float = 100.0
     terminal_failure_weight: float = -50.0
     k_action_effort: float = 0.0
@@ -54,6 +55,7 @@ class RollCurriculumStage:
             "settle_yaw_limit_deg": self.settle_yaw_limit_deg,
             "settle_ang_vel_limit_rad_s": self.settle_ang_vel_limit_rad_s,
             "settle_depth_error_limit_m": self.settle_depth_error_limit_m,
+            "settle_xy_drift_limit_m": self.settle_xy_drift_limit_m,
             "terminal_success_weight": self.terminal_success_weight,
             "terminal_failure_weight": self.terminal_failure_weight,
         }
@@ -411,6 +413,7 @@ ROLL_CURRICULUM_STAGES: dict[str, RollCurriculumStage] = {
         settle_yaw_limit_deg=90.0,
         settle_ang_vel_limit_rad_s=3.5,
         settle_depth_error_limit_m=1.5,
+        settle_xy_drift_limit_m=1.25,
         terminal_success_weight=180.0,
         terminal_failure_weight=-40.0,
     ),
@@ -433,6 +436,7 @@ ROLL_CURRICULUM_STAGES: dict[str, RollCurriculumStage] = {
         settle_yaw_limit_deg=90.0,
         settle_ang_vel_limit_rad_s=2.0,
         settle_depth_error_limit_m=1.5,
+        settle_xy_drift_limit_m=1.25,
         terminal_success_weight=180.0,
         terminal_failure_weight=-40.0,
         k_action_effort=0.003,
@@ -458,6 +462,7 @@ ROLL_CURRICULUM_STAGES: dict[str, RollCurriculumStage] = {
         settle_yaw_limit_deg=90.0,
         settle_ang_vel_limit_rad_s=2.0,
         settle_depth_error_limit_m=1.5,
+        settle_xy_drift_limit_m=1.25,
         terminal_success_weight=180.0,
         terminal_failure_weight=-40.0,
         k_action_effort=0.003,
@@ -483,11 +488,41 @@ ROLL_CURRICULUM_STAGES: dict[str, RollCurriculumStage] = {
         settle_yaw_limit_deg=90.0,
         settle_ang_vel_limit_rad_s=2.0,
         settle_depth_error_limit_m=1.5,
+        settle_xy_drift_limit_m=1.25,
         terminal_success_weight=180.0,
         terminal_failure_weight=-40.0,
         k_action_effort=0.003,
         k_thruster_saturation=0.20,
         thruster_saturation_threshold=0.85,
+    ),
+    "c3j_720_polish": RollCurriculumStage(
+        name="c3j_720_polish",
+        description=(
+            "Polish 720 hold from sat010: harder attitude/saturation discipline, tighter settle, "
+            "to bridge toward c4 deployment quality."
+        ),
+        target_roll_deg=720.0,
+        episode_length_s=20.0,
+        settle_window_s=0.25,
+        k_prog=5.0,
+        k_xy=0.25,
+        k_pitch=2.0,
+        k_yaw=0.8,
+        k_depth=0.8,
+        k_smooth=0.030,
+        excess_pitch_deg=70.0,
+        excess_depth_error_m=2.0,
+        excess_xy_drift_m=2.5,
+        settle_pitch_limit_deg=30.0,
+        settle_yaw_limit_deg=60.0,
+        settle_ang_vel_limit_rad_s=1.5,
+        settle_depth_error_limit_m=0.8,
+        settle_xy_drift_limit_m=0.7,
+        terminal_success_weight=200.0,
+        terminal_failure_weight=-40.0,
+        k_action_effort=0.005,
+        k_thruster_saturation=0.30,
+        thruster_saturation_threshold=0.75,
     ),
     "c3f_720_hold_0p10_soft": RollCurriculumStage(
         name="c3f_720_hold_0p10_soft",

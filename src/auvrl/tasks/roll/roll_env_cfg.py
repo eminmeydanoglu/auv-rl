@@ -37,6 +37,7 @@ def make_roll_env_cfg(
     settle_yaw_limit_deg: float = 15.0,
     settle_ang_vel_limit_rad_s: float = 0.25,
     settle_depth_error_limit_m: float = 0.15,
+    settle_xy_drift_limit_m: float | None = None,
     terminal_success_weight: float = 100.0,
     terminal_failure_weight: float = -50.0,
 ) -> ManagerBasedRlEnvCfg:
@@ -61,6 +62,17 @@ def make_roll_env_cfg(
             "thruster_saturation_threshold must be in [0, 1), "
             f"got {thruster_saturation_threshold}."
         )
+    if settle_xy_drift_limit_m is not None:
+        if settle_xy_drift_limit_m <= 0.0:
+            raise ValueError(
+                "settle_xy_drift_limit_m must be positive when set, "
+                f"got {settle_xy_drift_limit_m}."
+            )
+        if settle_xy_drift_limit_m > excess_xy_drift_m:
+            raise ValueError(
+                "settle_xy_drift_limit_m must be less than or equal to "
+                "excess_xy_drift_m."
+            )
 
     cfg = robot_base_env_cfg
     cfg.commands = {}
@@ -227,6 +239,7 @@ def make_roll_env_cfg(
                 "settle_yaw_limit_rad": math.radians(settle_yaw_limit_deg),
                 "settle_ang_vel_limit_rad_s": settle_ang_vel_limit_rad_s,
                 "settle_depth_error_limit_m": settle_depth_error_limit_m,
+                "settle_xy_drift_limit_m": settle_xy_drift_limit_m,
             },
         ),
     }

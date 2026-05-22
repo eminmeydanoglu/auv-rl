@@ -171,15 +171,22 @@ def settle_condition_mask(
     yaw_limit_rad: float,
     ang_vel_limit_rad_s: float,
     depth_error_limit_m: float,
+    xy_drift_m: torch.Tensor | None = None,
+    xy_drift_limit_m: float | None = None,
 ) -> torch.Tensor:
     """Return the per-env mask for the success settle window constraints."""
     ang_speed = torch.linalg.vector_norm(ang_vel_b_rad_s, dim=1)
-    return (
+    mask = (
         (pitch_rad.abs() <= float(pitch_limit_rad))
         & (yaw_error_rad.abs() <= float(yaw_limit_rad))
         & (ang_speed <= float(ang_vel_limit_rad_s))
         & (depth_error_m.abs() <= float(depth_error_limit_m))
     )
+    if xy_drift_limit_m is not None:
+        if xy_drift_m is None:
+            raise ValueError("xy_drift_m is required when xy_drift_limit_m is set.")
+        mask = mask & (xy_drift_m <= float(xy_drift_limit_m))
+    return mask
 
 
 def update_success_tracking(

@@ -86,6 +86,23 @@ def test_settle_condition_mask_checks_all_constraints() -> None:
     assert torch.equal(mask, torch.tensor([True, False]))
 
 
+def test_settle_condition_mask_can_require_xy_drift_limit() -> None:
+    mask = settle_condition_mask(
+        pitch_rad=torch.tensor([0.05, 0.05]),
+        yaw_error_rad=torch.tensor([0.10, 0.10]),
+        ang_vel_b_rad_s=torch.tensor([[0.05, 0.10, 0.15], [0.05, 0.10, 0.15]]),
+        depth_error_m=torch.tensor([0.05, 0.05]),
+        pitch_limit_rad=math.radians(10.0),
+        yaw_limit_rad=math.radians(15.0),
+        ang_vel_limit_rad_s=0.25,
+        depth_error_limit_m=0.15,
+        xy_drift_m=torch.tensor([1.0, 1.5]),
+        xy_drift_limit_m=1.25,
+    )
+
+    assert torch.equal(mask, torch.tensor([True, False]))
+
+
 def test_update_success_tracking_requires_continuous_settle_window() -> None:
     phi_total = torch.tensor([4.0 * math.pi], dtype=torch.float)
     target_reached = torch.tensor([False])

@@ -269,6 +269,17 @@ def test_roll_curriculum_low_saturation_experiments_match_plan() -> None:
         assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 2.5
 
 
+def test_roll_curriculum_xy_tight_success_requires_lower_settle_drift() -> None:
+    cfg = make_taluy_roll_env_cfg(
+        num_envs=1,
+        curriculum_stage="c3h_720_hold_0p05_xy_tight",
+    )
+
+    success_params = cfg.terminations["task_success"].params
+    assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 2.5
+    assert success_params["settle_xy_drift_limit_m"] == 1.25
+
+
 def test_roll_smoke_script_runs() -> None:
     roll_smoke.main()
 

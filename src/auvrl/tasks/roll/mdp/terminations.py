@@ -71,6 +71,7 @@ def roll_task_success(
     settle_yaw_limit_rad: float = torch.pi * 15.0 / 180.0,
     settle_ang_vel_limit_rad_s: float = 0.25,
     settle_depth_error_limit_m: float = 0.15,
+    settle_xy_drift_limit_m: float | None = None,
 ) -> torch.Tensor:
     """Terminate with success after the target is reached and held while settled."""
     state = get_roll_task_state(env, entity_name=entity_name)
@@ -83,16 +84,19 @@ def roll_task_success(
         root_pos_w, quat_wxyz = current_root_pose_from_qpos(robot)
         _roll_rad, pitch_rad, yaw_rad = quat_wxyz_to_roll_pitch_yaw(quat_wxyz)
         depth_error_m = root_pos_w[:, 2] - state.z_ref_m
+        xy_drift_m = torch.linalg.vector_norm(root_pos_w[:, :2] - state.xy_ref_w, dim=1)
         yaw_error_rad = wrap_to_pi(yaw_rad - state.psi_ref_rad)
         settle_mask = settle_condition_mask(
             pitch_rad=pitch_rad,
             yaw_error_rad=yaw_error_rad,
             ang_vel_b_rad_s=current_root_ang_vel_b_from_qvel(robot),
             depth_error_m=depth_error_m,
+            xy_drift_m=xy_drift_m,
             pitch_limit_rad=settle_pitch_limit_rad,
             yaw_limit_rad=settle_yaw_limit_rad,
             ang_vel_limit_rad_s=settle_ang_vel_limit_rad_s,
             depth_error_limit_m=settle_depth_error_limit_m,
+            xy_drift_limit_m=settle_xy_drift_limit_m,
         )
         next_target_reached, next_settle_counter, _success = update_success_tracking(
             phi_total_rad=state.phi_total_rad,

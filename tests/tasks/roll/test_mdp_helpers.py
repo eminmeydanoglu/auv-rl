@@ -280,6 +280,25 @@ def test_termination_helpers_and_success_logic() -> None:
     assert torch.equal(state.target_reached, torch.tensor([True]))
     assert torch.equal(state.settle_counter_steps, torch.tensor([1]))
 
+    env_with_xy_drift = _make_env()
+    drift_state = get_roll_task_state(env_with_xy_drift)
+    drift_state.phi_total_rad[:] = 4.0 * math.pi
+    env_with_xy_drift.episode_length_buf[:] = 1
+    env_with_xy_drift.scene["robot"].data.root_link_pos_w[:, :2] = (
+        drift_state.xy_ref_w + torch.tensor([[1.5, 0.0]], dtype=torch.float)
+    )
+
+    success = mdp.roll_task_success(
+        env_with_xy_drift,
+        target_roll_rad=4.0 * math.pi,
+        roll_direction=1,
+        settle_steps=1,
+        settle_xy_drift_limit_m=1.25,
+    )
+    assert torch.equal(success, torch.tensor([False]))
+    assert torch.equal(drift_state.target_reached, torch.tensor([True]))
+    assert torch.equal(drift_state.settle_counter_steps, torch.tensor([0]))
+
     env.scene["robot"].data.root_link_quat_w = quat_from_euler_xyz(
         torch.tensor([0.0], dtype=torch.float),
         torch.tensor([math.radians(85.0)], dtype=torch.float),
