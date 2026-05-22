@@ -160,6 +160,12 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _resolve_device(device_arg: str) -> str:
+    # Honor torchrun-provided LOCAL_RANK so each rank pins itself to its own GPU.
+    local_rank_env = os.environ.get("LOCAL_RANK")
+    if local_rank_env is not None and torch.cuda.is_available():
+        local_rank = int(local_rank_env)
+        os.environ.setdefault("MUJOCO_EGL_DEVICE_ID", str(local_rank))
+        return f"cuda:{local_rank}"
     if device_arg == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
     if device_arg == "cuda" and not torch.cuda.is_available():
@@ -172,10 +178,16 @@ def _default_num_envs(device: str) -> int:
 
 
 def _make_log_dir(experiment_name: str, run_name: str) -> Path:
-    log_root = Path("logs") / "rsl_rl" / experiment_name
-    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    folder_name = stamp if not run_name else f"{stamp}_{run_name}"
-    log_dir = log_root / folder_name
+    # In multi-rank torchrun, all ranks must share the SAME log_dir. Allow the
+    # caller (sbatch / launcher) to pin it via AUVRL_LOG_DIR.
+    override = os.environ.get("AUVRL_LOG_DIR")
+    if override:
+        log_dir = Path(override)
+    else:
+        log_root = Path("logs") / "rsl_rl" / experiment_name
+        stamp = os.environ.get("AUVRL_LOG_STAMP") or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        folder_name = stamp if not run_name else f"{stamp}_{run_name}"
+        log_dir = log_root / folder_name
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 
@@ -193,15 +205,20 @@ def main() -> None:
     os.environ.setdefault("MUJOCO_GL", "egl")
     configure_torch_backends()
 
+    # Rank-aware seed offset so different distributed workers see diverse rollouts.
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    seed = args.seed + rank
+
     env_cfg = make_taluy_roll_env_cfg(
         num_envs=num_envs,
         curriculum_stage=args.curriculum_stage,
         episode_length_s=args.episode_length_s,
     )
-    env_cfg.seed = args.seed
+    env_cfg.seed = seed
 
     agent_cfg = taluy_roll_ppo_runner_cfg()
-    agent_cfg.seed = args.seed
+    agent_cfg.seed = seed
     agent_cfg.max_iterations = args.iterations
     run_name = args.run_name or args.curriculum_stage or "smoke"
     agent_cfg.run_name = run_name
@@ -234,14 +251,19 @@ def main() -> None:
         agent_cfg.clip_actions = args.clip_actions
 
     log_dir = _make_log_dir(agent_cfg.experiment_name, agent_cfg.run_name)
-    env_dict = cast(dict[str, Any], _yaml_safe(asdict(env_cfg)))
-    agent_dict = cast(dict[str, Any], _yaml_safe(asdict(agent_cfg)))
-    dump_yaml(log_dir / "params" / "env.yaml", env_dict)
-    dump_yaml(log_dir / "params" / "agent.yaml", agent_dict)
+    is_rank0 = rank == 0
+    if is_rank0:
+        env_dict = cast(dict[str, Any], _yaml_safe(asdict(env_cfg)))
+        agent_dict = cast(dict[str, Any], _yaml_safe(asdict(agent_cfg)))
+        dump_yaml(log_dir / "params" / "env.yaml", env_dict)
+        dump_yaml(log_dir / "params" / "agent.yaml", agent_dict)
 
-    print("Starting Taluy MJLab PPO training")
+    if is_rank0:
+        print("Starting Taluy MJLab PPO training")
+        if world_size > 1:
+            print(f"distributed=true world_size={world_size}")
     print(
-        f"device={device} num_envs={num_envs} iterations={agent_cfg.max_iterations} "
+        f"rank={rank}/{world_size} device={device} num_envs={num_envs} iterations={agent_cfg.max_iterations} "
         f"num_steps_per_env={agent_cfg.num_steps_per_env}"
     )
     print(
