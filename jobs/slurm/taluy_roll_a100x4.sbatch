@@ -117,4 +117,38 @@ printf 'Command:'
 printf ' %q' "${cmd[@]}"
 printf '\n'
 
-srun --ntasks="$NUM_NODES" --ntasks-per-node=1 "${cmd[@]}"
+mapfile -t NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
+if [ "${#NODES[@]}" -ne "$NUM_NODES" ]; then
+  printf 'Expected %s nodes, got %s from %s\n' "$NUM_NODES" "${#NODES[@]}" "$SLURM_JOB_NODELIST" >&2
+  exit 2
+fi
+
+LAUNCH_SCRIPT="$AUV_HOME/work/taluy_roll_torchrun_${SLURM_JOB_ID:-manual}.sh"
+mkdir -p "$(dirname "$LAUNCH_SCRIPT")"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'set -euo pipefail\n'
+  printf 'export HOME=%q USER=%q LOGNAME=%q TMPDIR=%q XDG_CONFIG_HOME=%q XDG_CACHE_HOME=%q GIT_CONFIG_GLOBAL=%q GIT_SSH_COMMAND=%q HISTFILE=%q PATH=%q MUJOCO_GL=%q UV_CACHE_DIR=%q MPLCONFIGDIR=%q AUVRL_LOG_DIR=%q\n' \
+    "$HOME" "$USER" "$LOGNAME" "$TMPDIR" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$GIT_CONFIG_GLOBAL" "$GIT_SSH_COMMAND" "$HISTFILE" "$PATH" "$MUJOCO_GL" "$UV_CACHE_DIR" "$MPLCONFIGDIR" "$AUVRL_LOG_DIR"
+  printf 'unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER CONDA_SHLVL VIRTUAL_ENV PYTHONHOME PYTHONPATH\n'
+  printf 'cd %q\n' "$AUV_PROJECT_DIR"
+  printf 'exec'
+  printf ' %q' "${cmd[@]}"
+  printf '\n'
+} > "$LAUNCH_SCRIPT"
+chmod +x "$LAUNCH_SCRIPT"
+
+status=0
+pids=()
+for node in "${NODES[@]}"; do
+  printf 'launch_node=%s script=%s\n' "$node" "$LAUNCH_SCRIPT"
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=no "$node" "$LAUNCH_SCRIPT" &
+  pids+=("$!")
+done
+
+for pid in "${pids[@]}"; do
+  if ! wait "$pid"; then
+    status=1
+  fi
+done
+exit "$status"
