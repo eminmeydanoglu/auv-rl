@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import datetime
+import math
 import os
 from pathlib import Path
 from typing import Any, cast
@@ -171,6 +172,62 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Upload checkpoint files when using wandb logger.",
     )
+    parser.add_argument(
+        "--eval-interval",
+        type=int,
+        default=None,
+        help="Run roll eval every N PPO updates during training.",
+    )
+    parser.add_argument(
+        "--eval-num-envs",
+        type=int,
+        default=256,
+        help="Parallel env count for in-training eval.",
+    )
+    parser.add_argument(
+        "--eval-max-steps",
+        type=int,
+        default=None,
+        help="Maximum env steps per in-training eval episode.",
+    )
+    parser.add_argument(
+        "--eval-suite",
+        default=None,
+        help="Eval suite name under logs/tensorboard_eval/roll. Defaults to the training run folder.",
+    )
+    parser.add_argument(
+        "--eval-output-root",
+        type=Path,
+        default=ROOT / "logs" / "tensorboard_eval" / "roll",
+        help="Root directory for in-training eval artifacts.",
+    )
+    parser.add_argument(
+        "--eval-device",
+        choices=("same", "auto", "cpu", "cuda"),
+        default="same",
+        help="Device for in-training eval. 'same' reuses the training device.",
+    )
+    parser.add_argument(
+        "--eval-curriculum-stage",
+        choices=tuple(ROLL_CURRICULUM_STAGES),
+        default=None,
+        help="Curriculum stage used by in-training eval. Defaults to --curriculum-stage.",
+    )
+    parser.add_argument(
+        "--eval-skip-images",
+        action="store_true",
+        help="Skip PNG dashboards during in-training eval.",
+    )
+    parser.add_argument(
+        "--no-eval-final",
+        action="store_true",
+        help="Disable final checkpoint eval when --eval-interval is set.",
+    )
+    parser.add_argument(
+        "--eval-continue-on-error",
+        action="store_true",
+        help="Continue training if an in-training eval fails.",
+    )
     return parser.parse_args()
 
 
@@ -207,10 +264,184 @@ def _make_log_dir(experiment_name: str, run_name: str) -> Path:
     return log_dir
 
 
+def _validate_eval_args(args: argparse.Namespace) -> None:
+    if args.eval_interval is not None and args.eval_interval <= 0:
+        raise SystemExit("--eval-interval must be positive.")
+    if args.eval_num_envs <= 0:
+        raise SystemExit("--eval-num-envs must be positive.")
+    if args.eval_max_steps is not None and args.eval_max_steps <= 0:
+        raise SystemExit("--eval-max-steps must be positive when set.")
+
+
+def _eval_device_arg(eval_device: str, train_device: str) -> str:
+    if eval_device != "same":
+        return eval_device
+    return train_device
+
+
+def _summary_value(summary: dict[str, Any], *path: str) -> float | None:
+    value: Any = summary
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return None
+        value = value[key]
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _log_eval_summary_to_training_tb(summary: dict[str, Any], log_dir: Path, iteration: int, writer: Any | None) -> None:
+    created_writer = None
+    target_writer = writer
+    if target_writer is None:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+        except ModuleNotFoundError:
+            return
+        created_writer = SummaryWriter(log_dir=str(log_dir))
+        target_writer = created_writer
+    try:
+        scalar_paths = {
+            "EvalInTraining/done_rate": ("done_rate",),
+            "EvalInTraining/success_rate": ("outcome", "success_rate"),
+            "EvalInTraining/task_success_rate": ("outcome", "task_success_rate"),
+            "EvalInTraining/first_done_time_s_mean": ("first_done_time_s", "mean"),
+            "EvalInTraining/xy_drift_peak_mean": ("terminal", "final_xy_drift_m_peak", "mean"),
+            "EvalInTraining/xy_drift_time_mean": ("trajectory", "xy_drift_m", "time_mean_of_env_mean"),
+            "EvalInTraining/saturation_time_mean": (
+                "trajectory",
+                "body_wrench_saturation_fraction",
+                "time_mean_of_env_mean",
+            ),
+        }
+        for tag, path in scalar_paths.items():
+            value = _summary_value(summary, *path)
+            if value is not None and math.isfinite(value):
+                target_writer.add_scalar(tag, value, iteration)
+    finally:
+        if created_writer is not None:
+            created_writer.flush()
+            created_writer.close()
+
+
+def _run_checkpoint_eval(
+    *,
+    checkpoint_path: Path,
+    iteration: int,
+    args: argparse.Namespace,
+    train_device: str,
+    log_dir: Path,
+    writer: Any | None,
+) -> None:
+    from auvrl.scripts.eval import taluy_roll_tensorboard as roll_eval
+    from auvrl.scripts.eval.roll_eval_leaderboard import write_leaderboard
+
+    suite = roll_eval._safe_label(args.eval_suite or log_dir.name)
+    suite_dir = args.eval_output_root.expanduser().resolve() / suite
+    label = roll_eval._safe_label(f"{log_dir.name}_model_{iteration}")
+    eval_args = argparse.Namespace(
+        device=_eval_device_arg(args.eval_device, train_device),
+        num_envs=args.eval_num_envs,
+        max_steps=args.eval_max_steps,
+        curriculum_stage=args.eval_curriculum_stage or args.curriculum_stage,
+        episode_length_s=args.episode_length_s,
+        roll_direction=1,
+    )
+    run_dir = suite_dir / label
+    roll_eval._ensure_output_dir(run_dir, overwrite=True)
+    distributed_env_keys = ("WORLD_SIZE", "RANK", "LOCAL_RANK", "LOCAL_WORLD_SIZE")
+    distributed_env = {key: os.environ.get(key) for key in distributed_env_keys}
+    for key in distributed_env_keys:
+        os.environ.pop(key, None)
+    try:
+        series = roll_eval.evaluate_checkpoint(checkpoint_path, eval_args, label=label)
+    finally:
+        for key, value in distributed_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    summary = roll_eval.write_artifacts(series, run_dir, skip_images=args.eval_skip_images)
+    write_leaderboard(
+        search_root=suite_dir,
+        csv_path=suite_dir / "leaderboard.csv",
+        markdown_path=suite_dir / "leaderboard.md",
+    )
+    _log_eval_summary_to_training_tb(summary, log_dir, iteration, writer)
+    timing = summary["first_done_time_s"]
+    success = summary.get("outcome", {}).get("success_rate")
+    success_text = f"{success:.3f}" if isinstance(success, int | float) else "n/a"
+    print(
+        f"in_training_eval iteration={iteration} label={label} "
+        f"done={summary['done_count']}/{summary['num_envs']} "
+        f"success_rate={success_text} "
+        f"mean_first_done={timing['mean']:.3f}s "
+        f"run_dir={run_dir}"
+    )
+
+
+def _install_eval_hook(
+    runner: MjlabOnPolicyRunner,
+    *,
+    log_dir: Path,
+    args: argparse.Namespace,
+    device: str,
+) -> set[int]:
+    evaluated_iterations: set[int] = set()
+    original_log = runner.logger.log
+    eval_rank = int(getattr(runner, "gpu_global_rank", 0))
+    distributed = bool(getattr(runner, "is_distributed", False))
+
+    def hooked_log(*log_args: Any, **log_kwargs: Any) -> Any:
+        result = original_log(*log_args, **log_kwargs)
+        iteration = log_kwargs.get("it")
+        if iteration is None and log_args:
+            iteration = log_args[0]
+        if not isinstance(iteration, int):
+            return result
+        if (iteration + 1) % int(args.eval_interval) != 0:
+            return result
+        checkpoint_path = log_dir / f"model_{iteration}.pt"
+        if distributed:
+            torch.distributed.barrier()
+        eval_error: Exception | None = None
+        if eval_rank == 0:
+            try:
+                runner.save(str(checkpoint_path))
+                _run_checkpoint_eval(
+                    checkpoint_path=checkpoint_path,
+                    iteration=iteration,
+                    args=args,
+                    train_device=device,
+                    log_dir=log_dir,
+                    writer=runner.logger.writer,
+                )
+                evaluated_iterations.add(iteration)
+            except Exception as exc:
+                eval_error = exc
+                if args.eval_continue_on_error:
+                    print(f"in_training_eval_failed iteration={iteration} error={exc}")
+        if distributed:
+            fail = torch.tensor(
+                [1 if eval_error is not None else 0],
+                device=torch.device(device if device.startswith("cuda") else "cpu"),
+            )
+            torch.distributed.broadcast(fail, src=0)
+            if int(fail.item()) and not args.eval_continue_on_error and eval_rank != 0:
+                raise RuntimeError(f"in-training eval failed on rank 0 at iteration {iteration}.")
+        if eval_error is not None and not args.eval_continue_on_error:
+            raise eval_error
+        return result
+
+    runner.logger.log = hooked_log
+    return evaluated_iterations
+
+
 def main() -> None:
     args = _parse_args()
     device = _resolve_device(args.device)
     num_envs = args.num_envs if args.num_envs is not None else _default_num_envs(device)
+    _validate_eval_args(args)
 
     if num_envs <= 0:
         raise SystemExit("--num-envs must be positive.")
@@ -324,6 +555,14 @@ def main() -> None:
         env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
         vec_env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
         runner = MjlabOnPolicyRunner(vec_env, asdict(agent_cfg), str(log_dir), device)
+        evaluated_iterations: set[int] = set()
+        if args.eval_interval is not None:
+            evaluated_iterations = _install_eval_hook(
+                runner,
+                log_dir=log_dir,
+                args=args,
+                device=device,
+            )
         if args.resume_checkpoint is not None:
             if not args.resume_checkpoint.exists():
                 raise SystemExit(f"Checkpoint file not found: {args.resume_checkpoint}")
@@ -346,6 +585,27 @@ def main() -> None:
             num_learning_iterations=agent_cfg.max_iterations,
             init_at_random_ep_len=True,
         )
+        final_iteration = int(runner.current_learning_iteration)
+        if (
+            args.eval_interval is not None
+            and is_rank0
+            and not args.no_eval_final
+            and final_iteration not in evaluated_iterations
+        ):
+            checkpoint_path = log_dir / f"model_{final_iteration}.pt"
+            try:
+                _run_checkpoint_eval(
+                    checkpoint_path=checkpoint_path,
+                    iteration=final_iteration,
+                    args=args,
+                    train_device=device,
+                    log_dir=log_dir,
+                    writer=None,
+                )
+            except Exception as exc:
+                if not args.eval_continue_on_error:
+                    raise
+                print(f"in_training_eval_failed iteration={final_iteration} error={exc}")
     finally:
         if vec_env is not None:
             vec_env.close()

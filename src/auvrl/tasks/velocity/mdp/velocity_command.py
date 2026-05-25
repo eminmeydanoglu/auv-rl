@@ -82,6 +82,13 @@ class UniformBodyVelocityCommand(CommandTerm):
     def command(self) -> torch.Tensor:
         return self.vel_command_b
 
+    @property
+    def gui_enabled(self) -> bool:
+        """Return whether the Viser command GUI is actively driving this command."""
+        return self._joystick_enabled is not None and bool(
+            self._joystick_enabled.value
+        )
+
     def _update_metrics(self) -> None:
         max_command_time = max(
             float(self.cfg.resampling_time_range[1]), self._env.step_dt

@@ -7,7 +7,7 @@
           COM offset is derived from translation-rotation coupling terms.
         -->
         <inertial
-            pos="-0.020893 0.014748 -0.051290"
+            pos="0.0 0.0 -0.051290"
             mass="29.8419"
             fullinertia="0.858005 2.028468 2.160482 -0.040895 0.160980 -0.129573"
         />

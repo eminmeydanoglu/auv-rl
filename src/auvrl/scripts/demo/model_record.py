@@ -183,6 +183,7 @@ def _make_monitor_params(args: argparse.Namespace) -> dict[str, Any]:
         roll_direction=args.roll_direction,
     )
     task_success = cfg.terminations["task_success"].params
+    settle_xy_drift_limit_m = task_success.get("settle_xy_drift_limit_m")
     return {
         "episode_length_s": float(cfg.episode_length_s),
         "target_roll_rad": float(task_success["target_roll_rad"]),
@@ -192,6 +193,11 @@ def _make_monitor_params(args: argparse.Namespace) -> dict[str, Any]:
         "settle_yaw_limit_rad": float(task_success["settle_yaw_limit_rad"]),
         "settle_ang_vel_limit_rad_s": float(task_success["settle_ang_vel_limit_rad_s"]),
         "settle_depth_error_limit_m": float(task_success["settle_depth_error_limit_m"]),
+        "settle_xy_drift_limit_m": (
+            None
+            if settle_xy_drift_limit_m is None
+            else float(settle_xy_drift_limit_m)
+        ),
         "excess_pitch_limit_rad": float(cfg.terminations["excess_pitch"].params["limit_rad"]),
         "excess_depth_error_limit_m": float(
             cfg.terminations["excess_depth_error"].params["limit_m"]
@@ -313,6 +319,10 @@ class PassiveTaskMonitor:
             and abs(yaw_error_rad) <= float(params["settle_yaw_limit_rad"])
             and ang_speed_rad_s <= float(params["settle_ang_vel_limit_rad_s"])
             and abs(depth_error_m) <= float(params["settle_depth_error_limit_m"])
+            and (
+                params["settle_xy_drift_limit_m"] is None
+                or xy_drift_m <= float(params["settle_xy_drift_limit_m"])
+            )
         )
         if self.target_reached and settle_mask:
             self.settle_counter_steps += 1

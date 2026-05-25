@@ -46,6 +46,8 @@ if [ -n "${RUN_LOG_PATH:-}" ]; then
 fi
 
 STAGE="${STAGE:-c0_90_discovery}"
+AUTO_CURRICULUM="${AUTO_CURRICULUM:-}"
+AUTO_CURRICULUM_GOAL_STAGE="${AUTO_CURRICULUM_GOAL_STAGE:-c3q_720_c3l_strict_settle}"
 ITERS="${ITERS:-700}"
 NUM_ENVS_PER_GPU="${NUM_ENVS_PER_GPU:-1024}"
 NUM_STEPS_PER_ENV="${NUM_STEPS_PER_ENV:-256}"
@@ -76,13 +78,22 @@ cmd=(
   --master-port="$MASTER_PORT"
   -m auvrl.scripts.train.taluy_roll
   --device cuda
-  --curriculum-stage "$STAGE"
   --iterations "$ITERS"
   --num-envs "$NUM_ENVS_PER_GPU"
   --num-steps-per-env "$NUM_STEPS_PER_ENV"
   --save-interval "$SAVE_INTERVAL"
   --run-name "$RUN_NAME"
 )
+
+if [ -n "$AUTO_CURRICULUM" ]; then
+  cmd+=(
+    --curriculum-stage "$STAGE"
+    --auto-curriculum "$AUTO_CURRICULUM"
+    --auto-curriculum-goal-stage "$AUTO_CURRICULUM_GOAL_STAGE"
+  )
+else
+  cmd+=(--curriculum-stage "$STAGE")
+fi
 
 if [ -n "${LEARNING_RATE:-}" ]; then
   cmd+=(--learning-rate "$LEARNING_RATE")
@@ -103,6 +114,8 @@ fi
 printf 'host=%s\n' "$(hostname)"
 printf 'job_id=%s\n' "${SLURM_JOB_ID:-manual}"
 printf 'stage=%s\n' "$STAGE"
+printf 'auto_curriculum=%s\n' "$AUTO_CURRICULUM"
+printf 'auto_curriculum_goal_stage=%s\n' "$AUTO_CURRICULUM_GOAL_STAGE"
 printf 'run_name=%s\n' "$RUN_NAME"
 printf 'num_nodes=%s gpus_per_node=%s total_gpus=%s envs_per_gpu=%s total_envs=%s\n' "$NUM_NODES" "$NUM_GPUS_PER_NODE" "$TOTAL_GPUS" "$NUM_ENVS_PER_GPU" "$((TOTAL_GPUS * NUM_ENVS_PER_GPU))"
 printf 'resume_checkpoint=%s\n' "${RESUME_CHECKPOINT:-}"

@@ -54,6 +54,7 @@ from auvrl import (  # noqa: E402  # type: ignore[import-not-found]
 )
 from auvrl.actuator.body_wrench_action import BodyWrenchAction  # noqa: E402  # type: ignore[import-not-found]
 from auvrl.scripts.demo._odometry_panel import (  # noqa: E402
+    CommandEnableGatedPolicy,
     OdometryTelemetryPolicy,
     format_vec,
     quat_wxyz_to_euler_deg,
@@ -226,6 +227,7 @@ def _run_viser_viewer(
 
     if "viser_server" in params:
         server = _build_viser_server(host, port)
+        policy = CommandEnableGatedPolicy(policy, base_env)
         if odometry_period_s > 0.0:
             policy = OdometryTelemetryPolicy(
                 policy,
@@ -238,6 +240,7 @@ def _run_viser_viewer(
 
     if "server" in params:
         server = _build_viser_server(host, port)
+        policy = CommandEnableGatedPolicy(policy, base_env)
         if odometry_period_s > 0.0:
             policy = OdometryTelemetryPolicy(
                 policy,
