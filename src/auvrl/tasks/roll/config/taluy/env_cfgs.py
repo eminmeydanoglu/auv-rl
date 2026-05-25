@@ -5,6 +5,10 @@ from __future__ import annotations
 from mjlab.envs import ManagerBasedRlEnvCfg
 
 from auvrl.envs.taluy_env_cfg import make_taluy_base_env_cfg
+from auvrl.tasks.roll.auto_curriculum import (
+    POST_C3L_POLISH_AUTO_CURRICULUM,
+    build_post_c3l_polish_curriculum,
+)
 from auvrl.tasks.roll.curriculum import get_roll_curriculum_stage
 from auvrl.tasks.roll.roll_env_cfg import make_roll_env_cfg
 
@@ -17,13 +21,27 @@ def make_taluy_roll_env_cfg(
     roll_direction: int = 1,
     episode_length_s: float | None = None,
     settle_window_s: float = 1.0,
+    auto_curriculum: str | None = None,
+    auto_curriculum_goal_stage: str = "c3p_720_c3l_deploy_polish",
 ) -> ManagerBasedRlEnvCfg:
     """Create the Taluy v1 roll task with nominal physics and body-wrench control."""
+    if auto_curriculum is not None:
+        if auto_curriculum != POST_C3L_POLISH_AUTO_CURRICULUM:
+            raise ValueError(f"Unsupported roll auto curriculum: {auto_curriculum}.")
+        if curriculum_stage is None:
+            curriculum_stage = "c3l_720_xy_guard"
+        elif curriculum_stage != "c3l_720_xy_guard":
+            raise ValueError(
+                "post_c3l_polish auto curriculum requires "
+                "curriculum_stage='c3l_720_xy_guard'."
+            )
+
     roll_kwargs = {
         "target_roll_deg": target_roll_deg,
         "roll_direction": roll_direction,
         "settle_window_s": settle_window_s,
     }
+    stage = None
     if curriculum_stage is not None:
         stage = get_roll_curriculum_stage(curriculum_stage)
         roll_kwargs.update(stage.roll_env_kwargs())
@@ -41,6 +59,16 @@ def make_taluy_roll_env_cfg(
     )
     cfg.scene.num_envs = num_envs
     cfg.episode_length_s = episode_length_s
+    if auto_curriculum == POST_C3L_POLISH_AUTO_CURRICULUM:
+        if stage is None:
+            stage = get_roll_curriculum_stage("c3l_720_xy_guard")
+        goal_stage = get_roll_curriculum_stage(auto_curriculum_goal_stage)
+        cfg.curriculum.update(
+            build_post_c3l_polish_curriculum(
+                start_stage=stage,
+                goal_stage=goal_stage,
+            )
+        )
     return cfg
 
 

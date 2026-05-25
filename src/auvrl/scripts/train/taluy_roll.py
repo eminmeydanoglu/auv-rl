@@ -34,6 +34,9 @@ from auvrl import (  # noqa: E402  # type: ignore[import-not-found]
     make_taluy_roll_env_cfg,
     taluy_roll_ppo_runner_cfg,
 )
+from auvrl.tasks.roll.auto_curriculum import (  # noqa: E402
+    POST_C3L_POLISH_AUTO_CURRICULUM,
+)
 
 
 def _yaml_safe(value: Any) -> Any:
@@ -117,6 +120,18 @@ def _parse_args() -> argparse.Namespace:
         choices=tuple(ROLL_CURRICULUM_STAGES),
         default=None,
         help="Static roll curriculum stage to train. Example: c0_90_discovery.",
+    )
+    parser.add_argument(
+        "--auto-curriculum",
+        choices=(POST_C3L_POLISH_AUTO_CURRICULUM,),
+        default=None,
+        help="Enable an adaptive roll auto-curriculum.",
+    )
+    parser.add_argument(
+        "--auto-curriculum-goal-stage",
+        choices=tuple(ROLL_CURRICULUM_STAGES),
+        default="c3p_720_c3l_deploy_polish",
+        help="Goal reference stage for --auto-curriculum.",
     )
     parser.add_argument(
         "--resume-checkpoint",
@@ -214,13 +229,21 @@ def main() -> None:
         num_envs=num_envs,
         curriculum_stage=args.curriculum_stage,
         episode_length_s=args.episode_length_s,
+        auto_curriculum=args.auto_curriculum,
+        auto_curriculum_goal_stage=args.auto_curriculum_goal_stage,
     )
     env_cfg.seed = seed
 
     agent_cfg = taluy_roll_ppo_runner_cfg()
     agent_cfg.seed = seed
     agent_cfg.max_iterations = args.iterations
-    run_name = args.run_name or args.curriculum_stage or "smoke"
+    if args.run_name is not None:
+        run_name = args.run_name
+    elif args.auto_curriculum is not None:
+        start_stage = args.curriculum_stage or "c3l_720_xy_guard"
+        run_name = f"{args.auto_curriculum}_from_{start_stage}"
+    else:
+        run_name = args.curriculum_stage or "smoke"
     agent_cfg.run_name = run_name
     agent_cfg.upload_model = args.upload_model
     if args.num_steps_per_env is not None:
@@ -272,10 +295,13 @@ def main() -> None:
         f"entropy_coef={agent_cfg.algorithm.entropy_coef} "
         f"desired_kl={agent_cfg.algorithm.desired_kl}"
     )
-    if args.curriculum_stage is None:
+    printed_stage_name = args.curriculum_stage
+    if printed_stage_name is None and args.auto_curriculum is not None:
+        printed_stage_name = "c3l_720_xy_guard"
+    if printed_stage_name is None:
         print("task=roll_v1 target_roll_deg=720.0 roll_direction=1 settle_window_s=1.0")
     else:
-        stage = get_roll_curriculum_stage(args.curriculum_stage)
+        stage = get_roll_curriculum_stage(printed_stage_name)
         print(
             f"task=roll_v1 curriculum_stage={stage.name} "
             f"target_roll_deg={stage.target_roll_deg} "
@@ -283,6 +309,11 @@ def main() -> None:
             f"settle_window_s={stage.settle_window_s}"
         )
         print(f"stage_description={stage.description}")
+    if args.auto_curriculum is not None:
+        print(
+            f"auto_curriculum={args.auto_curriculum} "
+            f"auto_curriculum_goal_stage={args.auto_curriculum_goal_stage}"
+        )
     if args.resume_checkpoint is not None:
         print(f"resume_checkpoint={args.resume_checkpoint}")
         print(f"resume_mode={args.resume_mode}")
