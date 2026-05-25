@@ -594,6 +594,7 @@ def main() -> None:
         ):
             checkpoint_path = log_dir / f"model_{final_iteration}.pt"
             try:
+                runner.save(str(checkpoint_path))
                 _run_checkpoint_eval(
                     checkpoint_path=checkpoint_path,
                     iteration=final_iteration,

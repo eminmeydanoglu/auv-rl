@@ -51,7 +51,15 @@ AUTO_CURRICULUM_GOAL_STAGE="${AUTO_CURRICULUM_GOAL_STAGE:-c3q_720_c3l_strict_set
 ITERS="${ITERS:-700}"
 NUM_ENVS_PER_GPU="${NUM_ENVS_PER_GPU:-1024}"
 NUM_STEPS_PER_ENV="${NUM_STEPS_PER_ENV:-256}"
-SAVE_INTERVAL="${SAVE_INTERVAL:-50}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-10}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-50}"
+EVAL_NUM_ENVS="${EVAL_NUM_ENVS:-256}"
+EVAL_MAX_STEPS="${EVAL_MAX_STEPS:-}"
+EVAL_SUITE="${EVAL_SUITE:-}"
+EVAL_CURRICULUM_STAGE="${EVAL_CURRICULUM_STAGE:-}"
+EVAL_SKIP_IMAGES="${EVAL_SKIP_IMAGES:-0}"
+NO_EVAL_FINAL="${NO_EVAL_FINAL:-0}"
+EVAL_CONTINUE_ON_ERROR="${EVAL_CONTINUE_ON_ERROR:-1}"
 NUM_NODES="${SLURM_NNODES:-${NUM_NODES:-1}}"
 NUM_GPUS_PER_NODE="${NUM_GPUS_PER_NODE:-1}"
 TOTAL_GPUS="$((NUM_NODES * NUM_GPUS_PER_NODE))"
@@ -111,6 +119,28 @@ if [ -n "${RESUME_CHECKPOINT:-}" ]; then
   cmd+=(--resume-checkpoint "$RESUME_CHECKPOINT" --resume-mode "$RESUME_MODE")
 fi
 
+if [ -n "$EVAL_INTERVAL" ]; then
+  cmd+=(--eval-interval "$EVAL_INTERVAL" --eval-num-envs "$EVAL_NUM_ENVS")
+  if [ -n "$EVAL_MAX_STEPS" ]; then
+    cmd+=(--eval-max-steps "$EVAL_MAX_STEPS")
+  fi
+  if [ -n "$EVAL_SUITE" ]; then
+    cmd+=(--eval-suite "$EVAL_SUITE")
+  fi
+  if [ -n "$EVAL_CURRICULUM_STAGE" ]; then
+    cmd+=(--eval-curriculum-stage "$EVAL_CURRICULUM_STAGE")
+  fi
+  if [ "$EVAL_SKIP_IMAGES" = "1" ]; then
+    cmd+=(--eval-skip-images)
+  fi
+  if [ "$NO_EVAL_FINAL" = "1" ]; then
+    cmd+=(--no-eval-final)
+  fi
+  if [ "$EVAL_CONTINUE_ON_ERROR" = "1" ]; then
+    cmd+=(--eval-continue-on-error)
+  fi
+fi
+
 printf 'host=%s\n' "$(hostname)"
 printf 'job_id=%s\n' "${SLURM_JOB_ID:-manual}"
 printf 'stage=%s\n' "$STAGE"
@@ -120,6 +150,15 @@ printf 'run_name=%s\n' "$RUN_NAME"
 printf 'num_nodes=%s gpus_per_node=%s total_gpus=%s envs_per_gpu=%s total_envs=%s\n' "$NUM_NODES" "$NUM_GPUS_PER_NODE" "$TOTAL_GPUS" "$NUM_ENVS_PER_GPU" "$((TOTAL_GPUS * NUM_ENVS_PER_GPU))"
 printf 'resume_checkpoint=%s\n' "${RESUME_CHECKPOINT:-}"
 printf 'resume_mode=%s\n' "$RESUME_MODE"
+printf 'save_interval=%s\n' "$SAVE_INTERVAL"
+printf 'eval_interval=%s\n' "$EVAL_INTERVAL"
+printf 'eval_num_envs=%s\n' "$EVAL_NUM_ENVS"
+printf 'eval_max_steps=%s\n' "$EVAL_MAX_STEPS"
+printf 'eval_suite=%s\n' "$EVAL_SUITE"
+printf 'eval_curriculum_stage=%s\n' "$EVAL_CURRICULUM_STAGE"
+printf 'eval_skip_images=%s\n' "$EVAL_SKIP_IMAGES"
+printf 'no_eval_final=%s\n' "$NO_EVAL_FINAL"
+printf 'eval_continue_on_error=%s\n' "$EVAL_CONTINUE_ON_ERROR"
 printf 'log_dir=%s\n' "$AUVRL_LOG_DIR"
 printf 'master_addr=%s\n' "$MASTER_ADDR"
 printf 'master_port=%s\n' "$MASTER_PORT"

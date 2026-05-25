@@ -36,7 +36,7 @@ def taluy_roll_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
             max_grad_norm=1.0,
         ),
         experiment_name="taluy_roll_v1",
-        save_interval=90,
+        save_interval=25,
         clip_actions=1.0,
         num_steps_per_env=256,
         max_iterations=30_000,
