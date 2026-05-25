@@ -22,7 +22,7 @@ def make_taluy_roll_env_cfg(
     episode_length_s: float | None = None,
     settle_window_s: float = 1.0,
     auto_curriculum: str | None = None,
-    auto_curriculum_goal_stage: str = "c3p_720_c3l_deploy_polish",
+    auto_curriculum_goal_stage: str = "c3q_720_c3l_strict_settle",
 ) -> ManagerBasedRlEnvCfg:
     """Create the Taluy v1 roll task with nominal physics and body-wrench control."""
     if auto_curriculum is not None:

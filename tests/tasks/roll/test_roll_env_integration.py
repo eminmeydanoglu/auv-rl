@@ -389,6 +389,26 @@ def test_roll_curriculum_c3_polish_experiments_match_plan() -> None:
             "sat_weight": 0.20,
             "sat_threshold": 0.80,
         },
+        "c3q_720_c3l_strict_settle": {
+            "settle_steps": 63,
+            "k_prog": 5.5,
+            "k_xy": 0.35,
+            "k_pitch": 1.50,
+            "k_yaw": 0.75,
+            "k_depth": 0.80,
+            "k_smooth": 0.018,
+            "excess_xy": 2.0,
+            "settle_pitch_deg": 15.0,
+            "settle_yaw_deg": 15.0,
+            "settle_ang_vel": math.radians(15.0),
+            "settle_depth": 0.30,
+            "settle_xy": 0.35,
+            "terminal_success": 240.0,
+            "terminal_failure": -60.0,
+            "action_effort": 0.005,
+            "sat_weight": 0.20,
+            "sat_threshold": 0.80,
+        },
     }
 
     for stage_name, values in expected.items():
@@ -436,7 +456,7 @@ def test_roll_curriculum_xy_tight_success_requires_lower_settle_drift() -> None:
     assert success_params["settle_xy_drift_limit_m"] == 1.25
 
 
-def test_post_c3l_auto_curriculum_defaults_to_c3l_start_and_c3p_goal() -> None:
+def test_post_c3l_auto_curriculum_defaults_to_c3l_start_and_c3q_goal() -> None:
     cfg = make_taluy_roll_env_cfg(
         num_envs=1,
         auto_curriculum=POST_C3L_POLISH_AUTO_CURRICULUM,
@@ -447,7 +467,7 @@ def test_post_c3l_auto_curriculum_defaults_to_c3l_start_and_c3p_goal() -> None:
     schedule = term_cfg.params["schedule"]
     assert isinstance(schedule, PostC3LPolishSchedule)
     assert schedule.start_stage.name == "c3l_720_xy_guard"
-    assert schedule.goal_stage.name == "c3p_720_c3l_deploy_polish"
+    assert schedule.goal_stage.name == "c3q_720_c3l_strict_settle"
     assert cfg.rewards["roll_progress"].weight == 6.0
     assert cfg.rewards["xy_drift"].weight == 0.28
     assert cfg.rewards["pitch_penalty"].weight == 1.0

@@ -103,7 +103,7 @@ class _Env:
 def _term() -> tuple[PostC3LPolishCurriculum, _Env, PostC3LPolishSchedule]:
     schedule = PostC3LPolishSchedule(
         start_stage=get_roll_curriculum_stage("c3l_720_xy_guard"),
-        goal_stage=get_roll_curriculum_stage("c3p_720_c3l_deploy_polish"),
+        goal_stage=get_roll_curriculum_stage("c3q_720_c3l_strict_settle"),
         rolling_window_episodes=2,
         min_completed_episodes_per_update=2,
         observe_updates=1,

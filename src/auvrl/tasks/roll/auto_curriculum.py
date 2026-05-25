@@ -28,8 +28,8 @@ class PostC3LPolishSchedule:
     success_rollback_threshold: float = 0.95
     xy_peak_advance_max_m: float = 0.35
     xy_peak_rollback_max_m: float = 0.50
-    first_done_advance_max_s: float = 10.2
-    first_done_rollback_max_s: float = 10.8
+    first_done_advance_max_s: float = 10.6
+    first_done_rollback_max_s: float = 11.2
     saturation_rollback_max: float = 0.75
     action_l2_rollback_max: float = 6.5
     k_xy_step: float = 0.005
@@ -52,7 +52,9 @@ class PostC3LPolishCurriculum:
     _PHASES = (
         "observe",
         "attitude_depth",
-        "settle_hold",
+        "settle_attitude",
+        "settle_window",
+        "settle_motion",
         "smoothness",
         "saturation_weight",
         "saturation_threshold",
@@ -84,10 +86,12 @@ class PostC3LPolishCurriculum:
             "k_yaw",
             "k_depth",
         ),
-        "settle_hold": (
-            "settle_window_s",
+        "settle_attitude": (
             "settle_pitch_limit_deg",
             "settle_yaw_limit_deg",
+        ),
+        "settle_window": ("settle_window_s",),
+        "settle_motion": (
             "settle_ang_vel_limit_rad_s",
             "settle_depth_error_limit_m",
             "settle_xy_drift_limit_m",

@@ -130,7 +130,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--auto-curriculum-goal-stage",
         choices=tuple(ROLL_CURRICULUM_STAGES),
-        default="c3p_720_c3l_deploy_polish",
+        default="c3q_720_c3l_strict_settle",
         help="Goal reference stage for --auto-curriculum.",
     )
     parser.add_argument(
