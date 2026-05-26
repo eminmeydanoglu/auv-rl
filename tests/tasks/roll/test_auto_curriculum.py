@@ -145,6 +145,25 @@ def test_post_c3l_polish_advances_attitude_depth_after_safe_windows() -> None:
     assert env.reward_manager.get_term_cfg("pitch_penalty").weight == second_state[
         "k_pitch"
     ]
+    assert second_state["phase_is_attitude_depth"] == 1.0
+    assert second_state["advance_blocked_by_success"] == 0.0
+    assert second_state["advance_blocked_by_xy"] == 0.0
+    assert second_state["advance_blocked_by_pitch"] == 0.0
+
+
+def test_post_c3l_polish_splits_hard_pitch_from_settle_motion() -> None:
+    term, env, schedule = _term()
+    env_ids = torch.tensor([0, 1], dtype=torch.long)
+
+    state = term(env, env_ids, schedule=schedule)
+    for _ in range(80):
+        if state["phase_is_hard_pitch_envelope"] == 1.0:
+            break
+        state = term(env, env_ids, schedule=schedule)
+
+    assert state["phase_is_hard_pitch_envelope"] == 1.0
+    assert state["phase_is_settle_ang_vel"] == 0.0
+    assert state["advance_pitch_peak_limit_deg"] == state["excess_pitch_deg"] + 1.0
 
 
 def test_post_c3l_polish_rolls_back_attitude_depth_after_unsafe_window() -> None:

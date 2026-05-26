@@ -403,7 +403,7 @@ def test_roll_curriculum_c3_polish_experiments_match_plan() -> None:
             "settle_yaw_deg": 15.0,
             "settle_ang_vel": math.radians(15.0),
             "settle_depth": 0.30,
-            "settle_xy": 0.35,
+            "settle_xy": 0.50,
             "terminal_success": 240.0,
             "terminal_failure": -60.0,
             "action_effort": 0.005,
@@ -494,10 +494,18 @@ def test_post_c3l_auto_curriculum_initial_reset_logs_state() -> None:
         log = env.extras["log"]
         prefix = f"Curriculum/{POST_C3L_POLISH_AUTO_CURRICULUM}"
         assert log[f"{prefix}/phase_index"] == 0.0
+        assert log[f"{prefix}/phase_is_observe"] == 1.0
+        assert log[f"{prefix}/phase_is_settle_ang_vel"] == 0.0
         assert log[f"{prefix}/completed_episodes"] == 0.0
         assert log[f"{prefix}/k_pitch"] == 1.0
         assert log[f"{prefix}/k_thruster_saturation"] == 0.10
         assert log[f"{prefix}/thruster_saturation_threshold"] == 0.85
+        assert log[f"{prefix}/advance_blocked_by_success"] == 1.0
+        assert f"{prefix}/advance_xy_peak_margin_m" in log
+        assert f"{prefix}/pitch_margin_to_excess_deg" in log
+        assert f"{prefix}/root_ang_speed_margin_rad_s" in log
+        assert f"{prefix}/depth_margin_m" in log
+        assert f"{prefix}/settle_xy_margin_m" in log
     finally:
         env.close()
 

@@ -55,9 +55,12 @@ class PostC3LPolishCurriculum:
     _PHASES = (
         "observe",
         "attitude_depth",
+        "hard_pitch_envelope",
         "settle_attitude",
         "settle_window",
-        "settle_motion",
+        "settle_ang_vel",
+        "settle_depth",
+        "settle_xy",
         "smoothness",
         "saturation_weight",
         "saturation_threshold",
@@ -89,17 +92,15 @@ class PostC3LPolishCurriculum:
             "k_yaw",
             "k_depth",
         ),
+        "hard_pitch_envelope": ("excess_pitch_deg",),
         "settle_attitude": (
             "settle_pitch_limit_deg",
             "settle_yaw_limit_deg",
         ),
         "settle_window": ("settle_window_s",),
-        "settle_motion": (
-            "settle_ang_vel_limit_rad_s",
-            "settle_depth_error_limit_m",
-            "settle_xy_drift_limit_m",
-            "excess_pitch_deg",
-        ),
+        "settle_ang_vel": ("settle_ang_vel_limit_rad_s",),
+        "settle_depth": ("settle_depth_error_limit_m",),
+        "settle_xy": ("settle_xy_drift_limit_m",),
         "smoothness": (
             "k_smooth",
             "k_action_effort",
@@ -292,18 +293,17 @@ class PostC3LPolishCurriculum:
     def _can_advance(self) -> bool:
         if not self._success:
             return False
-        success_rate = _mean(self._success)
-        first_done_mean = _mean(self._first_done_s, default=float("inf"))
-        xy_peak_p95 = _quantile(self._xy_peak_m, 0.95, default=float("inf"))
-        pitch_peak_p95 = math.degrees(
-            _quantile(self._pitch_peak_rad, 0.95, default=float("inf"))
+        gates = self._gate_state()
+        blockers = (
+            "advance_blocked_by_success",
+            "advance_blocked_by_first_done",
+            "advance_blocked_by_xy",
+            "advance_blocked_by_pitch",
+            "advance_blocked_by_root_ang_speed",
+            "advance_blocked_by_depth",
+            "advance_blocked_by_settle_xy",
         )
-        return (
-            success_rate >= self._schedule.success_advance_threshold
-            and xy_peak_p95 <= self._schedule.xy_peak_advance_max_m
-            and pitch_peak_p95 <= self._schedule.pitch_peak_advance_max_deg
-            and first_done_mean <= self._schedule.first_done_advance_max_s
-        )
+        return not any(bool(gates[name]) for name in blockers)
 
     def _must_rollback(self) -> bool:
         if not self._success:
@@ -314,12 +314,20 @@ class PostC3LPolishCurriculum:
         pitch_peak_p95 = math.degrees(
             _quantile(self._pitch_peak_rad, 0.95, default=float("inf"))
         )
+        xy_rollback_limit = max(
+            self._schedule.xy_peak_rollback_max_m,
+            self._values["settle_xy_drift_limit_m"],
+        )
+        pitch_rollback_limit = max(
+            self._schedule.pitch_peak_rollback_max_deg,
+            self._values["excess_pitch_deg"] + 2.0,
+        )
         saturation_mean = _mean(self._saturation)
         action_l2_mean = _mean(self._action_l2)
         return (
             success_rate < self._schedule.success_rollback_threshold
-            or xy_peak_p95 > self._schedule.xy_peak_rollback_max_m
-            or pitch_peak_p95 > self._schedule.pitch_peak_rollback_max_deg
+            or xy_peak_p95 > xy_rollback_limit
+            or pitch_peak_p95 > pitch_rollback_limit
             or first_done_mean > self._schedule.first_done_rollback_max_s
             or saturation_mean > self._schedule.saturation_rollback_max
             or action_l2_mean > self._schedule.action_l2_rollback_max
@@ -348,7 +356,7 @@ class PostC3LPolishCurriculum:
         )
 
     def _state(self) -> dict[str, float]:
-        return {
+        state = {
             "phase_index": float(self._phase_index),
             "progress": self._progress(),
             "safe": float(self._last_safe),
@@ -392,9 +400,118 @@ class PostC3LPolishCurriculum:
             "settle_xy_drift_limit_m": self._values["settle_xy_drift_limit_m"],
             "excess_pitch_deg": self._values["excess_pitch_deg"],
         }
+        phase = self._PHASES[self._phase_index]
+        state.update(
+            {f"phase_is_{name}": float(name == phase) for name in self._PHASES}
+        )
+        state.update(self._gate_state())
+        return state
+
+    def _gate_state(self) -> dict[str, float]:
+        phase = self._PHASES[self._phase_index]
+        phase_index = self._phase_index
+        has_window = bool(self._success)
+        empty_metric_default = 0.0 if not has_window else float("inf")
+        success_rate = _mean(self._success)
+        first_done_mean = _mean(self._first_done_s, default=empty_metric_default)
+        xy_peak_p95 = _quantile(self._xy_peak_m, 0.95, default=empty_metric_default)
+        pitch_peak_p95_deg = math.degrees(
+            _quantile(self._pitch_peak_rad, 0.95, default=empty_metric_default)
+        )
+        depth_mean = _mean(self._depth_abs_error_m, default=empty_metric_default)
+        root_ang_speed_mean = _mean(
+            self._root_ang_speed_rad_s, default=empty_metric_default
+        )
+
+        success_limit = self._schedule.success_advance_threshold
+        first_done_limit = self._schedule.first_done_advance_max_s
+        pitch_limit = self._values["excess_pitch_deg"] + 1.0
+        xy_limit = self._xy_advance_limit_for_phase(phase)
+        root_ang_speed_limit = self._values["settle_ang_vel_limit_rad_s"]
+        depth_limit = self._values["settle_depth_error_limit_m"]
+        settle_xy_limit = self._values["settle_xy_drift_limit_m"]
+        xy_rollback_limit = max(
+            self._schedule.xy_peak_rollback_max_m,
+            self._values["settle_xy_drift_limit_m"],
+        )
+        pitch_rollback_limit = max(
+            self._schedule.pitch_peak_rollback_max_deg,
+            self._values["excess_pitch_deg"] + 2.0,
+        )
+
+        require_root_ang_speed = phase_index >= self._PHASES.index("settle_ang_vel")
+        require_depth = phase_index >= self._PHASES.index("settle_depth")
+        require_settle_xy = phase_index >= self._PHASES.index("settle_xy")
+
+        success_margin = success_rate - success_limit
+        first_done_margin_s = first_done_limit - first_done_mean
+        xy_peak_margin_m = xy_limit - xy_peak_p95
+        pitch_peak_margin_deg = pitch_limit - pitch_peak_p95_deg
+        pitch_margin_to_excess_deg = (
+            self._values["excess_pitch_deg"] - pitch_peak_p95_deg
+        )
+        root_ang_speed_margin_rad_s = root_ang_speed_limit - root_ang_speed_mean
+        depth_margin_m = depth_limit - depth_mean
+        settle_xy_margin_m = settle_xy_limit - xy_peak_p95
+
+        return {
+            "advance_success_margin": success_margin,
+            "advance_first_done_margin_s": first_done_margin_s,
+            "advance_xy_peak_margin_m": xy_peak_margin_m,
+            "advance_pitch_peak_margin_deg": pitch_peak_margin_deg,
+            "pitch_margin_to_excess_deg": pitch_margin_to_excess_deg,
+            "root_ang_speed_margin_rad_s": root_ang_speed_margin_rad_s,
+            "depth_margin_m": depth_margin_m,
+            "settle_xy_margin_m": settle_xy_margin_m,
+            "advance_success_limit": success_limit,
+            "advance_first_done_limit_s": first_done_limit,
+            "advance_xy_peak_limit_m": xy_limit,
+            "advance_pitch_peak_limit_deg": pitch_limit,
+            "advance_root_ang_speed_limit_rad_s": root_ang_speed_limit,
+            "advance_depth_limit_m": depth_limit,
+            "advance_settle_xy_limit_m": settle_xy_limit,
+            "rollback_xy_peak_limit_m": xy_rollback_limit,
+            "rollback_pitch_peak_limit_deg": pitch_rollback_limit,
+            "rollback_first_done_limit_s": self._schedule.first_done_rollback_max_s,
+            "advance_blocked_by_success": float(success_margin < 0.0),
+            "advance_blocked_by_first_done": float(first_done_margin_s < 0.0),
+            "advance_blocked_by_xy": float(xy_peak_margin_m < 0.0),
+            "advance_blocked_by_pitch": float(pitch_peak_margin_deg < 0.0),
+            "advance_blocked_by_root_ang_speed": float(
+                require_root_ang_speed and root_ang_speed_margin_rad_s < 0.0
+            ),
+            "advance_blocked_by_depth": float(require_depth and depth_margin_m < 0.0),
+            "advance_blocked_by_settle_xy": float(
+                require_settle_xy and settle_xy_margin_m < 0.0
+            ),
+        }
+
+    def _xy_advance_limit_for_phase(self, phase: str) -> float:
+        if phase in {
+            "settle_xy",
+            "smoothness",
+            "saturation_weight",
+            "saturation_threshold",
+            "done",
+        }:
+            return max(
+                self._schedule.xy_peak_advance_max_m,
+                self._values["settle_xy_drift_limit_m"],
+            )
+        return max(
+            self._schedule.xy_peak_advance_max_m,
+            min(
+                self._schedule.xy_peak_rollback_max_m,
+                self._values["settle_xy_drift_limit_m"],
+            ),
+        )
 
     def _progress(self) -> float:
-        fields = [field for phase in self._PHASE_FIELDS for field in self._PHASE_FIELDS[phase]]
+        fields = [
+            field
+            for phase in self._PHASE_FIELDS
+            for field in self._PHASE_FIELDS[phase]
+        ]
         progress = []
         for field in fields:
             start = self._start[field]
