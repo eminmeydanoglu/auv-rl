@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -100,7 +101,7 @@ def test_write_artifacts_creates_json_npz_and_image(tmp_path: Path) -> None:
         first_done_step=np.asarray([1, 1]),
         first_done_time_s=np.asarray([0.2, 0.2]),
         done_reason=np.asarray([1, 1]),
-        metadata={},
+        metadata={"eval_kind": "current"},
     )
 
     write_artifacts(series, tmp_path, skip_images=False)
@@ -109,6 +110,8 @@ def test_write_artifacts_creates_json_npz_and_image(tmp_path: Path) -> None:
     assert (tmp_path / "eval_episodes.jsonl").exists()
     assert (tmp_path / "eval_timeseries.npz").exists()
     assert (tmp_path / "summary_dashboard.png").exists()
+    summary = json.loads((tmp_path / "eval_summary.json").read_text())
+    assert summary["metadata"]["eval_kind"] == "current"
 
 
 def test_mask_after_done_3d_zeros_after_first_done() -> None:

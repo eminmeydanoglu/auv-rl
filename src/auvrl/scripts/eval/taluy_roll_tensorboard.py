@@ -156,6 +156,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--curriculum-stage", default=None)
     parser.add_argument("--eval-rules-path", type=Path, default=None)
+    parser.add_argument("--eval-kind", default=None)
     parser.add_argument("--episode-length-s", type=float, default=None)
     parser.add_argument("--roll-direction", type=int, choices=(-1, 1), default=1)
     parser.add_argument(
@@ -712,6 +713,7 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace, *, label: str) -> 
             "checkpoint": str(path),
             "checkpoint_step": _checkpoint_step(path),
             "curriculum_stage": args.curriculum_stage,
+            "eval_kind": getattr(args, "eval_kind", None),
             "eval_rules_path": (
                 None
                 if getattr(args, "eval_rules_path", None) is None

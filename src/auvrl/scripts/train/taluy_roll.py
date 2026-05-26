@@ -373,6 +373,7 @@ def _run_checkpoint_eval(
         max_steps=args.eval_max_steps,
         curriculum_stage=curriculum_stage,
         eval_rules_path=rules_path,
+        eval_kind=safe_kind,
         episode_length_s=args.episode_length_s,
         roll_direction=1,
     )
