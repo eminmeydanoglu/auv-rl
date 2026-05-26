@@ -43,6 +43,10 @@ from auvrl import (  # noqa: E402
 )
 from auvrl.actuator.body_wrench_action import BodyWrenchAction  # noqa: E402
 from auvrl.actuator.thruster_actuator import THRUSTER_LOCAL_AXIS  # noqa: E402
+from auvrl.tasks.roll.eval_rules import (  # noqa: E402
+    apply_roll_eval_rules_to_cfg,
+    load_roll_eval_rules,
+)
 from auvrl.tasks.roll.runtime import (  # noqa: E402
     current_root_ang_vel_b_from_qvel,
     current_root_pose_from_qpos,
@@ -86,6 +90,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--episode-length-s", type=float, default=None)
     parser.add_argument("--roll-direction", type=int, choices=(-1, 1), default=1)
+    parser.add_argument("--eval-rules-path", type=Path, default=None)
     parser.add_argument(
         "--play-mode",
         choices=("deployment", "training"),
@@ -182,6 +187,8 @@ def _make_monitor_params(args: argparse.Namespace) -> dict[str, Any]:
         episode_length_s=args.episode_length_s,
         roll_direction=args.roll_direction,
     )
+    rules = load_roll_eval_rules(getattr(args, "eval_rules_path", None))
+    apply_roll_eval_rules_to_cfg(cfg, rules)
     task_success = cfg.terminations["task_success"].params
     settle_xy_drift_limit_m = task_success.get("settle_xy_drift_limit_m")
     return {
@@ -215,6 +222,8 @@ def _make_env(args: argparse.Namespace, device: str) -> ManagerBasedRlEnv:
         episode_length_s=args.episode_length_s,
         roll_direction=args.roll_direction,
     )
+    rules = load_roll_eval_rules(getattr(args, "eval_rules_path", None))
+    apply_roll_eval_rules_to_cfg(cfg, rules)
     if args.play_mode == "deployment":
         cfg.terminations = {}
     return ManagerBasedRlEnv(cfg=cfg, device=device)

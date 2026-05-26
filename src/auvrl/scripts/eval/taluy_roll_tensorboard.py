@@ -64,6 +64,7 @@ TERMINAL_METRICS = (
     "roll_progress_ratio",
     "phi_total_rad",
     "pitch_abs_rad",
+    "pitch_abs_peak_rad",
     "yaw_abs_error_rad",
     "xy_drift_m",
     "depth_abs_error_m",
@@ -154,6 +155,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=16)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--curriculum-stage", default=None)
+    parser.add_argument("--eval-rules-path", type=Path, default=None)
     parser.add_argument("--episode-length-s", type=float, default=None)
     parser.add_argument("--roll-direction", type=int, choices=(-1, 1), default=1)
     parser.add_argument(
@@ -248,12 +250,23 @@ def _take_first_done(values: np.ndarray, first_done_step: np.ndarray) -> np.ndar
     return out
 
 
+def _take_pre_done(values: np.ndarray, first_done_step: np.ndarray) -> np.ndarray:
+    values_2d = _to_2d(values, name="values")
+    out = np.full(values_2d.shape[1], np.nan, dtype=np.float64)
+    for env_idx, step in enumerate(first_done_step):
+        if step < 0:
+            continue
+        row = min(max(int(step) - 1, 0), values_2d.shape[0] - 1)
+        out[env_idx] = float(values_2d[row, env_idx])
+    return out
+
+
 def _last_active(values: np.ndarray, first_done_step: np.ndarray) -> np.ndarray:
     values_2d = _to_2d(values, name="values")
     out = np.full(values_2d.shape[1], np.nan, dtype=np.float64)
     for env_idx, step in enumerate(first_done_step):
         if step >= 0:
-            row = min(int(step), values_2d.shape[0] - 1)
+            row = min(max(int(step) - 1, 0), values_2d.shape[0] - 1)
         else:
             row = values_2d.shape[0] - 1
         out[env_idx] = float(values_2d[row, env_idx])
@@ -264,7 +277,7 @@ def _mask_after_done(values: np.ndarray, first_done_step: np.ndarray) -> np.ndar
     values_2d = _to_2d(values, name="values").astype(np.float64).copy()
     for env_idx, step in enumerate(first_done_step):
         if step >= 0:
-            values_2d[int(step) + 1 :, env_idx] = np.nan
+            values_2d[int(step) :, env_idx] = np.nan
     return values_2d
 
 
@@ -284,12 +297,16 @@ def summarize_eval(series: EvalSeries) -> dict[str, Any]:
         "trajectory": {},
     }
 
-    if series.done_reason.size:
+    has_done_reason = bool(series.done_reason.size and np.any(series.done_reason != 0))
+    if has_done_reason:
         for code, name in enumerate(OUTCOME_REASON_NAMES, start=1):
             summary["outcome"][f"{name}_rate"] = float(np.mean(series.done_reason == code))
+        summary["outcome"]["success_rate"] = summary["outcome"]["task_success_rate"]
     if "would_success" in series.arrays:
         first_success = _take_first_done(series.arrays["would_success"], series.first_done_step)
-        summary["outcome"]["success_rate"] = float(np.nanmean(first_success > 0.5))
+        summary["outcome"]["would_success_rate"] = float(np.nanmean(first_success > 0.5))
+        if not has_done_reason:
+            summary["outcome"]["success_rate"] = summary["outcome"]["would_success_rate"]
     elif "target_reached" in series.arrays:
         first_reached = _take_first_done(series.arrays["target_reached"], series.first_done_step)
         summary["outcome"]["target_reached_rate"] = float(np.nanmean(first_reached > 0.5))
@@ -298,7 +315,7 @@ def summarize_eval(series: EvalSeries) -> dict[str, Any]:
         if metric not in series.arrays:
             continue
         terminal = _last_active(series.arrays[metric], series.first_done_step)
-        first_done = _take_first_done(series.arrays[metric], series.first_done_step)
+        first_done = _take_pre_done(series.arrays[metric], series.first_done_step)
         summary["terminal"][f"final_{metric}"] = _nan_stats(terminal)
         summary["terminal"][f"first_done_{metric}"] = _nan_stats(first_done)
 
@@ -320,7 +337,8 @@ def _load_timeseries_npz(path: Path, *, label: str | None = None) -> EvalSeries:
     arrays = {
         name: _to_2d(data[name], name=name).astype(np.float32)
         for name in data.files
-        if data[name].ndim in (1, 2) and name not in {"first_done_step", "first_done_time_s"}
+        if data[name].ndim in (1, 2)
+        and name not in {"first_done_step", "first_done_time_s", "done_reason"}
     }
     first_done_step_raw = (
         np.asarray(data["first_done_step"], dtype=np.int64)
@@ -342,7 +360,11 @@ def _load_timeseries_npz(path: Path, *, label: str | None = None) -> EvalSeries:
         time_s=time_s,
         first_done_step=first_done_step,
         first_done_time_s=first_done_time_s,
-        done_reason=np.zeros_like(first_done_step, dtype=np.int64),
+        done_reason=(
+            np.asarray(data["done_reason"], dtype=np.int64)
+            if "done_reason" in data.files
+            else np.empty(0, dtype=np.int64)
+        ),
         metadata={"input_kind": "timeseries_npz"},
     )
 
@@ -493,6 +515,7 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace, *, label: str) -> 
         deployment_completion_action="zero",
         episode_length_s=args.episode_length_s,
         roll_direction=args.roll_direction,
+        eval_rules_path=getattr(args, "eval_rules_path", None),
         print_period=0,
     )
     device = model_record._resolve_device(args.device)
@@ -573,6 +596,7 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace, *, label: str) -> 
         first_done_time_s = np.full(base_env.num_envs, np.nan, dtype=np.float64)
         done_reason = np.zeros(base_env.num_envs, dtype=np.int64)
         xy_peak = torch.zeros(base_env.num_envs, device=base_env.device)
+        pitch_peak = torch.zeros(base_env.num_envs, device=base_env.device)
         prev_action = torch.zeros(
             base_env.num_envs, int(wrench_term.action_dim), device=base_env.device
         )
@@ -586,6 +610,8 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace, *, label: str) -> 
 
             xy = mdp.xy_drift_m(base_env)
             xy_peak = torch.maximum(xy_peak, xy)
+            pitch_abs = mdp.pitch_abs_rad(base_env)
+            pitch_peak = torch.maximum(pitch_peak, pitch_abs)
 
             # Signed RPY and z_drift from live qpos.
             robot = base_env.scene["robot"]
@@ -621,7 +647,8 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace, *, label: str) -> 
                 "y_drift_m": mdp.y_drift_m(base_env),
                 "z_drift_m": z_drift,
                 "xy_drift_m_peak": xy_peak,
-                "pitch_abs_rad": mdp.pitch_abs_rad(base_env),
+                "pitch_abs_rad": pitch_abs,
+                "pitch_abs_peak_rad": pitch_peak,
                 "yaw_abs_error_rad": mdp.yaw_abs_error_rad(base_env),
                 "root_ang_speed_rad_s": mdp.root_ang_speed_rad_s(base_env),
                 "body_wrench_action_l2": mdp.body_wrench_action_l2(base_env),
@@ -685,6 +712,11 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace, *, label: str) -> 
             "checkpoint": str(path),
             "checkpoint_step": _checkpoint_step(path),
             "curriculum_stage": args.curriculum_stage,
+            "eval_rules_path": (
+                None
+                if getattr(args, "eval_rules_path", None) is None
+                else str(getattr(args, "eval_rules_path"))
+            ),
             "num_envs": args.num_envs,
             "control_dt_s": float(base_env.step_dt),
             "site_force_limit_n": site_force_limit_n,
@@ -900,7 +932,7 @@ def _mask_after_done_3d(values: np.ndarray | None, first_done_step: np.ndarray) 
     out = np.asarray(values, dtype=np.float64).copy()
     for env_idx, stop in enumerate(first_done_step):
         if stop >= 0:
-            out[int(stop) + 1 :, env_idx, :] = np.nan
+            out[int(stop) :, env_idx, :] = np.nan
     return out
 
 
@@ -911,7 +943,7 @@ def _last_active_3d(values: np.ndarray | None, first_done_step: np.ndarray) -> n
     n_envs = arr.shape[1]
     out = np.full((n_envs, arr.shape[2]), np.nan, dtype=np.float64)
     for env_idx, stop in enumerate(first_done_step):
-        row = min(int(stop), arr.shape[0] - 1) if stop >= 0 else arr.shape[0] - 1
+        row = min(max(int(stop) - 1, 0), arr.shape[0] - 1) if stop >= 0 else arr.shape[0] - 1
         out[env_idx, :] = arr[row, env_idx, :]
     return out
 

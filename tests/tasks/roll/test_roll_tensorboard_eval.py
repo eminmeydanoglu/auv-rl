@@ -46,8 +46,8 @@ def test_summarize_eval_uses_first_done_and_final_values() -> None:
 
     assert summary["done_count"] == 1
     assert summary["done_rate"] == 0.5
-    assert summary["terminal"]["first_done_pitch_abs_rad"]["mean"] == np.float32(0.03)
-    assert summary["terminal"]["final_roll_progress_ratio"]["mean"] == np.float32(1.1)
+    assert summary["terminal"]["first_done_pitch_abs_rad"]["mean"] == np.float32(0.01)
+    assert np.isclose(summary["terminal"]["final_roll_progress_ratio"]["mean"], 0.65)
     assert summary["trajectory"]["body_wrench_saturation_fraction"]["peak_env_mean"] == 0.5
 
 
@@ -115,8 +115,8 @@ def test_mask_after_done_3d_zeros_after_first_done() -> None:
     arr = np.arange(24, dtype=np.float32).reshape(4, 2, 3)
     masked = _mask_after_done_3d(arr, np.asarray([1, -1]))
 
-    assert np.allclose(masked[:2, 0, :], arr[:2, 0, :])
-    assert np.all(np.isnan(masked[2:, 0, :]))
+    assert np.allclose(masked[:1, 0, :], arr[:1, 0, :])
+    assert np.all(np.isnan(masked[1:, 0, :]))
     assert np.allclose(masked[:, 1, :], arr[:, 1, :])
 
 
@@ -125,7 +125,7 @@ def test_last_active_3d_picks_done_row_for_each_env() -> None:
     last = _last_active_3d(arr, np.asarray([0, 3]))
 
     assert np.allclose(last[0], arr[0, 0])
-    assert np.allclose(last[1], arr[3, 1])
+    assert np.allclose(last[1], arr[2, 1])
 
 
 def _make_rich_series(num_steps: int = 6, num_envs: int = 4, num_thr: int = 8) -> EvalSeries:

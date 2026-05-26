@@ -38,6 +38,10 @@ from auvrl import (  # noqa: E402  # type: ignore[import-not-found]
 from auvrl.tasks.roll.auto_curriculum import (  # noqa: E402
     POST_C3L_POLISH_AUTO_CURRICULUM,
 )
+from auvrl.tasks.roll.eval_rules import (  # noqa: E402
+    capture_roll_eval_rules,
+    write_roll_eval_rules,
+)
 
 
 def _yaml_safe(value: Any) -> Any:
@@ -279,6 +283,14 @@ def _eval_device_arg(eval_device: str, train_device: str) -> str:
     return train_device
 
 
+def _goal_eval_stage(args: argparse.Namespace) -> str | None:
+    if args.eval_curriculum_stage is not None:
+        return args.eval_curriculum_stage
+    if args.auto_curriculum is not None:
+        return args.auto_curriculum_goal_stage
+    return args.curriculum_stage
+
+
 def _summary_value(summary: dict[str, Any], *path: str) -> float | None:
     value: Any = summary
     for key in path:
@@ -290,7 +302,14 @@ def _summary_value(summary: dict[str, Any], *path: str) -> float | None:
     return None
 
 
-def _log_eval_summary_to_training_tb(summary: dict[str, Any], log_dir: Path, iteration: int, writer: Any | None) -> None:
+def _log_eval_summary_to_training_tb(
+    summary: dict[str, Any],
+    log_dir: Path,
+    iteration: int,
+    writer: Any | None,
+    *,
+    tag_prefix: str = "EvalInTraining",
+) -> None:
     created_writer = None
     target_writer = writer
     if target_writer is None:
@@ -302,13 +321,13 @@ def _log_eval_summary_to_training_tb(summary: dict[str, Any], log_dir: Path, ite
         target_writer = created_writer
     try:
         scalar_paths = {
-            "EvalInTraining/done_rate": ("done_rate",),
-            "EvalInTraining/success_rate": ("outcome", "success_rate"),
-            "EvalInTraining/task_success_rate": ("outcome", "task_success_rate"),
-            "EvalInTraining/first_done_time_s_mean": ("first_done_time_s", "mean"),
-            "EvalInTraining/xy_drift_peak_mean": ("terminal", "final_xy_drift_m_peak", "mean"),
-            "EvalInTraining/xy_drift_time_mean": ("trajectory", "xy_drift_m", "time_mean_of_env_mean"),
-            "EvalInTraining/saturation_time_mean": (
+            f"{tag_prefix}/done_rate": ("done_rate",),
+            f"{tag_prefix}/success_rate": ("outcome", "success_rate"),
+            f"{tag_prefix}/task_success_rate": ("outcome", "task_success_rate"),
+            f"{tag_prefix}/first_done_time_s_mean": ("first_done_time_s", "mean"),
+            f"{tag_prefix}/xy_drift_peak_mean": ("terminal", "final_xy_drift_m_peak", "mean"),
+            f"{tag_prefix}/xy_drift_time_mean": ("trajectory", "xy_drift_m", "time_mean_of_env_mean"),
+            f"{tag_prefix}/saturation_time_mean": (
                 "trajectory",
                 "body_wrench_saturation_fraction",
                 "time_mean_of_env_mean",
@@ -332,22 +351,31 @@ def _run_checkpoint_eval(
     train_device: str,
     log_dir: Path,
     writer: Any | None,
+    eval_kind: str,
+    curriculum_stage: str | None,
+    eval_rules: dict[str, Any] | None = None,
 ) -> None:
     from auvrl.scripts.eval import taluy_roll_tensorboard as roll_eval
     from auvrl.scripts.eval.roll_eval_leaderboard import write_leaderboard
 
     suite = roll_eval._safe_label(args.eval_suite or log_dir.name)
     suite_dir = args.eval_output_root.expanduser().resolve() / suite
-    label = roll_eval._safe_label(f"{log_dir.name}_model_{iteration}")
+    safe_kind = roll_eval._safe_label(eval_kind)
+    label = roll_eval._safe_label(f"{log_dir.name}_{safe_kind}_model_{iteration}")
+    run_dir = suite_dir / label
+    rules_path = None
+    if eval_rules is not None:
+        rules_path = run_dir / "eval_rules.json"
+        write_roll_eval_rules(rules_path, eval_rules)
     eval_args = argparse.Namespace(
         device=_eval_device_arg(args.eval_device, train_device),
         num_envs=args.eval_num_envs,
         max_steps=args.eval_max_steps,
-        curriculum_stage=args.eval_curriculum_stage or args.curriculum_stage,
+        curriculum_stage=curriculum_stage,
+        eval_rules_path=rules_path,
         episode_length_s=args.episode_length_s,
         roll_direction=1,
     )
-    run_dir = suite_dir / label
     roll_eval._ensure_output_dir(run_dir, overwrite=True)
     distributed_env_keys = ("WORLD_SIZE", "RANK", "LOCAL_RANK", "LOCAL_WORLD_SIZE")
     distributed_env = {key: os.environ.get(key) for key in distributed_env_keys}
@@ -367,12 +395,18 @@ def _run_checkpoint_eval(
         csv_path=suite_dir / "leaderboard.csv",
         markdown_path=suite_dir / "leaderboard.md",
     )
-    _log_eval_summary_to_training_tb(summary, log_dir, iteration, writer)
+    _log_eval_summary_to_training_tb(
+        summary,
+        log_dir,
+        iteration,
+        writer,
+        tag_prefix=f"EvalInTraining/{safe_kind}",
+    )
     timing = summary["first_done_time_s"]
     success = summary.get("outcome", {}).get("success_rate")
     success_text = f"{success:.3f}" if isinstance(success, int | float) else "n/a"
     print(
-        f"in_training_eval iteration={iteration} label={label} "
+        f"in_training_eval kind={safe_kind} iteration={iteration} label={label} "
         f"done={summary['done_count']}/{summary['num_envs']} "
         f"success_rate={success_text} "
         f"mean_first_done={timing['mean']:.3f}s "
@@ -383,6 +417,7 @@ def _run_checkpoint_eval(
 def _install_eval_hook(
     runner: MjlabOnPolicyRunner,
     *,
+    env: ManagerBasedRlEnv,
     log_dir: Path,
     args: argparse.Namespace,
     device: str,
@@ -408,6 +443,21 @@ def _install_eval_hook(
         if eval_rank == 0:
             try:
                 runner.save(str(checkpoint_path))
+                current_stage = args.curriculum_stage
+                if current_stage is None and args.auto_curriculum is not None:
+                    current_stage = "c3l_720_xy_guard"
+                if args.auto_curriculum is not None:
+                    _run_checkpoint_eval(
+                        checkpoint_path=checkpoint_path,
+                        iteration=iteration,
+                        args=args,
+                        train_device=device,
+                        log_dir=log_dir,
+                        writer=runner.logger.writer,
+                        eval_kind="current",
+                        curriculum_stage=current_stage,
+                        eval_rules=capture_roll_eval_rules(env, mode="current"),
+                    )
                 _run_checkpoint_eval(
                     checkpoint_path=checkpoint_path,
                     iteration=iteration,
@@ -415,6 +465,8 @@ def _install_eval_hook(
                     train_device=device,
                     log_dir=log_dir,
                     writer=runner.logger.writer,
+                    eval_kind="goal",
+                    curriculum_stage=_goal_eval_stage(args),
                 )
                 evaluated_iterations.add(iteration)
             except Exception as exc:
@@ -559,6 +611,7 @@ def main() -> None:
         if args.eval_interval is not None:
             evaluated_iterations = _install_eval_hook(
                 runner,
+                env=env,
                 log_dir=log_dir,
                 args=args,
                 device=device,
@@ -595,6 +648,21 @@ def main() -> None:
             checkpoint_path = log_dir / f"model_{final_iteration}.pt"
             try:
                 runner.save(str(checkpoint_path))
+                current_stage = args.curriculum_stage
+                if current_stage is None and args.auto_curriculum is not None:
+                    current_stage = "c3l_720_xy_guard"
+                if args.auto_curriculum is not None:
+                    _run_checkpoint_eval(
+                        checkpoint_path=checkpoint_path,
+                        iteration=final_iteration,
+                        args=args,
+                        train_device=device,
+                        log_dir=log_dir,
+                        writer=None,
+                        eval_kind="current",
+                        curriculum_stage=current_stage,
+                        eval_rules=capture_roll_eval_rules(env, mode="current"),
+                    )
                 _run_checkpoint_eval(
                     checkpoint_path=checkpoint_path,
                     iteration=final_iteration,
@@ -602,6 +670,8 @@ def main() -> None:
                     train_device=device,
                     log_dir=log_dir,
                     writer=None,
+                    eval_kind="goal",
+                    curriculum_stage=_goal_eval_stage(args),
                 )
             except Exception as exc:
                 if not args.eval_continue_on_error:
