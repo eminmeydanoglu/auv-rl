@@ -44,20 +44,29 @@ class _TerminationManager:
                 "settle_xy_drift_limit_m": 0.9,
             }
         )
+        self.excess_pitch_cfg = SimpleNamespace(
+            params={
+                "limit_rad": torch.pi * 80.0 / 180.0,
+            }
+        )
 
     def get_term(self, name: str) -> torch.Tensor:
         assert name == "task_success"
         return self.success
 
     def get_term_cfg(self, name: str) -> SimpleNamespace:
-        assert name == "task_success"
-        return self.task_success_cfg
+        if name == "task_success":
+            return self.task_success_cfg
+        if name == "excess_pitch":
+            return self.excess_pitch_cfg
+        raise KeyError(name)
 
 
 class _MetricsManager:
     def __init__(self) -> None:
         self.active_terms = [
             "xy_drift_m_peak",
+            "pitch_abs_peak_rad",
             "depth_abs_error_m",
             "pitch_abs_rad",
             "yaw_abs_error_rad",
@@ -66,6 +75,7 @@ class _MetricsManager:
             "body_wrench_saturation_fraction",
         ]
         self._term_cfgs = [
+            SimpleNamespace(reduce="last"),
             SimpleNamespace(reduce="last"),
             SimpleNamespace(reduce="mean"),
             SimpleNamespace(reduce="mean"),
@@ -77,8 +87,8 @@ class _MetricsManager:
         self._step_count = torch.tensor([920, 920], dtype=torch.long)
         self._step_values = torch.tensor(
             [
-                [0.20, 0.10, 0.20, 0.40, 1.0, 4.0, 0.50],
-                [0.22, 0.12, 0.22, 0.42, 1.1, 4.2, 0.52],
+                [0.20, 0.30, 0.10, 0.20, 0.40, 1.0, 4.0, 0.50],
+                [0.22, 0.32, 0.12, 0.22, 0.42, 1.1, 4.2, 0.52],
             ],
             dtype=torch.float,
         )

@@ -204,6 +204,7 @@ def make_roll_env_cfg(
         "x_drift_m_last": MetricsTermCfg(func=mdp.x_drift_m, reduce="last"),
         "y_drift_m_last": MetricsTermCfg(func=mdp.y_drift_m, reduce="last"),
         "xy_drift_m_peak": MetricsTermCfg(func=mdp.XyDriftPeakM, reduce="last"),
+        "pitch_abs_peak_rad": MetricsTermCfg(func=mdp.PitchAbsPeakRad, reduce="last"),
         "pitch_abs_rad": MetricsTermCfg(func=mdp.pitch_abs_rad),
         "yaw_abs_error_rad": MetricsTermCfg(func=mdp.yaw_abs_error_rad),
         "root_ang_speed_rad_s": MetricsTermCfg(func=mdp.root_ang_speed_rad_s),

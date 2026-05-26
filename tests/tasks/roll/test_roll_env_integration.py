@@ -49,6 +49,7 @@ def test_roll_env_cfg_api_and_reset_state() -> None:
         "x_drift_m_last",
         "y_drift_m_last",
         "xy_drift_m_peak",
+        "pitch_abs_peak_rad",
         "pitch_abs_rad",
         "yaw_abs_error_rad",
         "root_ang_speed_rad_s",

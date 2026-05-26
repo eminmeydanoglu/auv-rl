@@ -8,6 +8,7 @@ from .observations import (
     xy_error_w,
 )
 from .metrics import (
+    PitchAbsPeakRad,
     XyDriftPeakM,
     body_wrench_action_l2,
     body_wrench_saturation_fraction,
@@ -62,6 +63,7 @@ __all__ = [
     "last_body_wrench_action",
     "phi_total_rad",
     "phi_total_norm",
+    "PitchAbsPeakRad",
     "pitch_penalty",
     "pitch_abs_rad",
     "roll_progress",

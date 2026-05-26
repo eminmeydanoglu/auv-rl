@@ -129,6 +129,27 @@ class XyDriftPeakM:
             self._peak[env_ids] = 0.0
 
 
+class PitchAbsPeakRad:
+    def __init__(self, cfg: object, env: ManagerBasedRlEnv) -> None:
+        del cfg
+        self._peak = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        entity_name: str = "robot",
+    ) -> torch.Tensor:
+        current = pitch_abs_rad(env, entity_name=entity_name)
+        self._peak = torch.maximum(self._peak, current)
+        return self._peak
+
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        if env_ids is None:
+            self._peak.zero_()
+        else:
+            self._peak[env_ids] = 0.0
+
+
 def pitch_abs_rad(
     env: ManagerBasedRlEnv,
     entity_name: str = "robot",
@@ -213,6 +234,7 @@ __all__ = [
     "depth_abs_error_m",
     "hydro_wrench_norm",
     "phi_total_rad",
+    "PitchAbsPeakRad",
     "pitch_abs_rad",
     "roll_progress_ratio",
     "root_ang_speed_rad_s",
