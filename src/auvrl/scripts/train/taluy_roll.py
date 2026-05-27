@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import datetime
+import json
 import math
 import os
 from pathlib import Path
+import time
 from typing import Any, cast
 
 try:
@@ -324,9 +326,49 @@ def _log_eval_summary_to_training_tb(
             f"{tag_prefix}/done_rate": ("done_rate",),
             f"{tag_prefix}/success_rate": ("outcome", "success_rate"),
             f"{tag_prefix}/task_success_rate": ("outcome", "task_success_rate"),
+            f"{tag_prefix}/target_reached_rate": ("outcome", "target_reached_rate"),
+            f"{tag_prefix}/would_success_rate": ("outcome", "would_success_rate"),
+            f"{tag_prefix}/excess_pitch_rate": ("outcome", "excess_pitch_rate"),
+            f"{tag_prefix}/excess_depth_error_rate": (
+                "outcome",
+                "excess_depth_error_rate",
+            ),
+            f"{tag_prefix}/excess_xy_drift_rate": ("outcome", "excess_xy_drift_rate"),
+            f"{tag_prefix}/time_out_rate": ("outcome", "time_out_rate"),
             f"{tag_prefix}/first_done_time_s_mean": ("first_done_time_s", "mean"),
             f"{tag_prefix}/xy_drift_peak_mean": ("terminal", "final_xy_drift_m_peak", "mean"),
+            f"{tag_prefix}/xy_drift_peak_p90": ("terminal", "final_xy_drift_m_peak", "p90"),
+            f"{tag_prefix}/pitch_abs_peak_p90": (
+                "terminal",
+                "final_pitch_abs_peak_rad",
+                "p90",
+            ),
+            f"{tag_prefix}/yaw_abs_error_p90": (
+                "terminal",
+                "final_yaw_abs_error_rad",
+                "p90",
+            ),
+            f"{tag_prefix}/root_ang_speed_p90": (
+                "terminal",
+                "final_root_ang_speed_rad_s",
+                "p90",
+            ),
+            f"{tag_prefix}/depth_abs_error_p90": (
+                "terminal",
+                "final_depth_abs_error_m",
+                "p90",
+            ),
             f"{tag_prefix}/xy_drift_time_mean": ("trajectory", "xy_drift_m", "time_mean_of_env_mean"),
+            f"{tag_prefix}/root_ang_speed_time_mean": (
+                "trajectory",
+                "root_ang_speed_rad_s",
+                "time_mean_of_env_mean",
+            ),
+            f"{tag_prefix}/depth_abs_error_time_mean": (
+                "trajectory",
+                "depth_abs_error_m",
+                "time_mean_of_env_mean",
+            ),
             f"{tag_prefix}/saturation_time_mean": (
                 "trajectory",
                 "body_wrench_saturation_fraction",
@@ -415,6 +457,37 @@ def _run_checkpoint_eval(
     )
 
 
+def _eval_sync_status_path(log_dir: Path, iteration: int) -> Path:
+    return log_dir / "eval_sync" / f"iteration_{iteration}.json"
+
+
+def _write_eval_sync_status(path: Path, error: Exception | None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ok": error is None,
+        "error": None if error is None else repr(error),
+    }
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _wait_for_eval_sync_status(
+    path: Path,
+    *,
+    poll_interval_s: float = 0.25,
+    timeout_s: float | None = None,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    while True:
+        try:
+            return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+        except FileNotFoundError:
+            if timeout_s is not None and time.monotonic() - started >= timeout_s:
+                raise TimeoutError(f"Timed out waiting for in-training eval status: {path}")
+            time.sleep(poll_interval_s)
+
+
 def _install_eval_hook(
     runner: MjlabOnPolicyRunner,
     *,
@@ -438,7 +511,10 @@ def _install_eval_hook(
         if (iteration + 1) % int(args.eval_interval) != 0:
             return result
         checkpoint_path = log_dir / f"model_{iteration}.pt"
+        sync_status_path = _eval_sync_status_path(log_dir, iteration)
         if distributed:
+            if eval_rank == 0:
+                sync_status_path.unlink(missing_ok=True)
             torch.distributed.barrier()
         eval_error: Exception | None = None
         if eval_rank == 0:
@@ -475,13 +551,16 @@ def _install_eval_hook(
                 if args.eval_continue_on_error:
                     print(f"in_training_eval_failed iteration={iteration} error={exc}")
         if distributed:
-            fail = torch.tensor(
-                [1 if eval_error is not None else 0],
-                device=torch.device(device if device.startswith("cuda") else "cpu"),
-            )
-            torch.distributed.broadcast(fail, src=0)
-            if int(fail.item()) and not args.eval_continue_on_error and eval_rank != 0:
-                raise RuntimeError(f"in-training eval failed on rank 0 at iteration {iteration}.")
+            # Eval can exceed NCCL's watchdog; workers must wait outside a collective.
+            if eval_rank == 0:
+                _write_eval_sync_status(sync_status_path, eval_error)
+            else:
+                status = _wait_for_eval_sync_status(sync_status_path)
+                if not bool(status.get("ok", False)):
+                    eval_error = RuntimeError(
+                        f"in-training eval failed on rank 0 at iteration {iteration}: "
+                        f"{status.get('error', 'unknown error')}"
+                    )
         if eval_error is not None and not args.eval_continue_on_error:
             raise eval_error
         return result

@@ -34,6 +34,13 @@ class _RewardManager:
 class _TerminationManager:
     def __init__(self, success: torch.Tensor) -> None:
         self.success = success
+        self.terms = {
+            "task_success": success,
+            "time_out": torch.zeros_like(success),
+            "excess_pitch": torch.zeros_like(success),
+            "excess_depth_error": torch.zeros_like(success),
+            "excess_xy_drift": torch.zeros_like(success),
+        }
         self.task_success_cfg = SimpleNamespace(
             params={
                 "settle_steps": 13,
@@ -51,8 +58,9 @@ class _TerminationManager:
         )
 
     def get_term(self, name: str) -> torch.Tensor:
-        assert name == "task_success"
-        return self.success
+        if name == "task_success":
+            self.terms[name] = self.success
+        return self.terms[name]
 
     def get_term_cfg(self, name: str) -> SimpleNamespace:
         if name == "task_success":
@@ -73,6 +81,7 @@ class _MetricsManager:
             "root_ang_speed_rad_s",
             "body_wrench_action_l2",
             "body_wrench_saturation_fraction",
+            "target_reached_last",
         ]
         self._term_cfgs = [
             SimpleNamespace(reduce="last"),
@@ -83,6 +92,7 @@ class _MetricsManager:
             SimpleNamespace(reduce="mean"),
             SimpleNamespace(reduce="mean"),
             SimpleNamespace(reduce="mean"),
+            SimpleNamespace(reduce="last"),
         ]
         self._step_count = torch.tensor([920, 920], dtype=torch.long)
         self._step_values = torch.tensor(
@@ -91,6 +101,10 @@ class _MetricsManager:
                 [0.22, 0.32, 0.12, 0.22, 0.42, 1.1, 4.2, 0.52],
             ],
             dtype=torch.float,
+        )
+        self._step_values = torch.cat(
+            [self._step_values, torch.ones((2, 1), dtype=torch.float)],
+            dim=1,
         )
         self._episode_sums = {
             name: self._step_values[:, index] * self._step_count.float()
@@ -149,6 +163,14 @@ def test_post_c3l_polish_advances_attitude_depth_after_safe_windows() -> None:
     assert second_state["advance_blocked_by_success"] == 0.0
     assert second_state["advance_blocked_by_xy"] == 0.0
     assert second_state["advance_blocked_by_pitch"] == 0.0
+    assert second_state["target_reached_rate"] == 1.0
+    assert second_state["reached_but_not_success_rate"] == 0.0
+    assert second_state["time_out_rate"] == 0.0
+    assert second_state["excess_pitch_rate"] == 0.0
+    assert second_state["settle_all_ok_rate"] == 1.0
+    assert second_state["phase_update_count"] == 1.0
+    assert second_state["phase_completed_episodes"] == 2.0
+    assert second_state["phase_advance_count"] == 1.0
 
 
 def test_post_c3l_polish_splits_hard_pitch_from_settle_motion() -> None:
@@ -164,6 +186,85 @@ def test_post_c3l_polish_splits_hard_pitch_from_settle_motion() -> None:
     assert state["phase_is_hard_pitch_envelope"] == 1.0
     assert state["phase_is_settle_ang_vel"] == 0.0
     assert state["advance_pitch_peak_limit_deg"] == state["excess_pitch_deg"] + 1.0
+
+
+def test_post_c3l_polish_logs_first_done_without_gating_curriculum() -> None:
+    term, _, _ = _term()
+    term._success.extend([1.0, 1.0])
+    term._first_done_s.extend([30.0, 30.0])
+    term._xy_peak_m.extend([0.20, 0.20])
+    term._pitch_peak_rad.extend([0.30, 0.30])
+    term._depth_abs_error_m.extend([0.10, 0.10])
+    term._root_ang_speed_rad_s.extend([1.0, 1.0])
+    term._action_l2.extend([4.0, 4.0])
+    term._saturation.extend([0.50, 0.50])
+
+    term._phase_index = term._PHASES.index("settle_window")
+    state = term._state()
+    assert state["first_done_time_mean_s"] == 30.0
+    assert "advance_first_done_limit_s" not in state
+    assert "advance_first_done_margin_s" not in state
+    assert "advance_blocked_by_first_done" not in state
+    assert "rollback_first_done_limit_s" not in state
+    assert term._can_advance()
+
+    term._phase_index = term._PHASES.index("settle_ang_vel")
+    assert term._can_advance()
+    assert not term._must_rollback()
+
+
+def test_post_c3l_polish_logs_rollback_reasons_and_margins() -> None:
+    term, _, _ = _term()
+    term._success.extend([0.0, 1.0])
+    term._target_reached.extend([1.0, 1.0])
+    term._time_out.extend([1.0, 0.0])
+    term._excess_pitch.extend([0.0, 0.0])
+    term._excess_depth_error.extend([0.0, 0.0])
+    term._excess_xy_drift.extend([0.0, 0.0])
+    term._xy_peak_m.extend([0.80, 0.75])
+    term._pitch_peak_rad.extend([0.30, 0.30])
+    term._depth_abs_error_m.extend([0.10, 0.10])
+    term._pitch_abs_rad.extend([0.20, 0.20])
+    term._yaw_abs_error_rad.extend([0.10, 0.10])
+    term._root_ang_speed_rad_s.extend([1.0, 1.0])
+    term._action_l2.extend([4.0, 4.0])
+    term._saturation.extend([0.50, 0.50])
+
+    state = term._state()
+
+    assert state["success_rate"] == 0.5
+    assert state["target_reached_rate"] == 1.0
+    assert state["reached_but_not_success_rate"] == 0.5
+    assert state["time_out_rate"] == 0.5
+    assert state["rollback_blocked_by_success"] == 1.0
+    assert state["rollback_blocked_by_xy"] == 1.0
+    assert state["rollback_success_margin"] == -0.44999999999999996
+    assert state["rollback_xy_peak_margin_m"] < 0.0
+    assert term._must_rollback()
+
+
+def test_post_c3l_polish_rolls_back_xy_before_settle_xy_phase() -> None:
+    term, _, schedule = _term()
+    term._success.extend([1.0, 1.0])
+    term._xy_peak_m.extend([0.824, 0.824])
+    term._pitch_peak_rad.extend([0.30, 0.30])
+    term._depth_abs_error_m.extend([0.10, 0.10])
+    term._root_ang_speed_rad_s.extend([1.0, 1.0])
+    term._action_l2.extend([4.0, 4.0])
+    term._saturation.extend([0.50, 0.50])
+    term._values["settle_xy_drift_limit_m"] = 0.9
+
+    term._phase_index = term._PHASES.index("settle_ang_vel")
+    state = term._state()
+    assert state["rollback_xy_peak_limit_m"] == schedule.xy_peak_rollback_max_m
+    assert state["rollback_blocked_by_xy"] == 1.0
+    assert term._must_rollback()
+
+    term._phase_index = term._PHASES.index("settle_xy")
+    state = term._state()
+    assert state["rollback_xy_peak_limit_m"] == 0.9
+    assert state["rollback_blocked_by_xy"] == 0.0
+    assert not term._must_rollback()
 
 
 def test_post_c3l_polish_rolls_back_attitude_depth_after_unsafe_window() -> None:
