@@ -256,13 +256,31 @@ def test_post_c3l_polish_rolls_back_xy_before_settle_xy_phase() -> None:
 
     term._phase_index = term._PHASES.index("settle_ang_vel")
     state = term._state()
-    assert state["rollback_xy_peak_limit_m"] == schedule.xy_peak_rollback_max_m
+    assert state["rollback_xy_peak_limit_m"] == schedule.pre_settle_xy_rollback_max_m
     assert state["rollback_blocked_by_xy"] == 1.0
     assert term._must_rollback()
 
     term._phase_index = term._PHASES.index("settle_xy")
     state = term._state()
     assert state["rollback_xy_peak_limit_m"] == 0.9
+    assert state["rollback_blocked_by_xy"] == 0.0
+    assert not term._must_rollback()
+
+
+def test_post_c3l_polish_tolerates_moderate_xy_before_settle_xy_phase() -> None:
+    term, _, schedule = _term()
+    term._success.extend([1.0, 1.0])
+    term._xy_peak_m.extend([0.60, 0.60])
+    term._pitch_peak_rad.extend([0.30, 0.30])
+    term._depth_abs_error_m.extend([0.10, 0.10])
+    term._root_ang_speed_rad_s.extend([1.0, 1.0])
+    term._action_l2.extend([4.0, 4.0])
+    term._saturation.extend([0.50, 0.50])
+    term._values["settle_xy_drift_limit_m"] = 0.9
+
+    term._phase_index = term._PHASES.index("settle_ang_vel")
+    state = term._state()
+    assert state["rollback_xy_peak_limit_m"] == schedule.pre_settle_xy_rollback_max_m
     assert state["rollback_blocked_by_xy"] == 0.0
     assert not term._must_rollback()
 

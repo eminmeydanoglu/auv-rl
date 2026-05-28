@@ -28,6 +28,7 @@ class PostC3LPolishSchedule:
     success_rollback_threshold: float = 0.95
     xy_peak_advance_max_m: float = 0.35
     xy_peak_rollback_max_m: float = 0.50
+    pre_settle_xy_rollback_max_m: float = 0.65
     pitch_peak_advance_max_deg: float = 72.0
     pitch_peak_rollback_max_deg: float = 78.0
     saturation_rollback_max: float = 0.75
@@ -614,7 +615,7 @@ class PostC3LPolishCurriculum:
                 self._schedule.xy_peak_rollback_max_m,
                 self._values["settle_xy_drift_limit_m"],
             )
-        return self._schedule.xy_peak_rollback_max_m
+        return self._schedule.pre_settle_xy_rollback_max_m
 
     def _progress(self) -> float:
         fields = [
