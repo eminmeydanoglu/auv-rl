@@ -32,6 +32,7 @@ class RollCurriculumStage:
     terminal_failure_weight: float = -50.0
     k_action_effort: float = 0.0
     k_thruster_saturation: float = 0.0
+    k_post_target_roll_through_torque: float = 0.0
     thruster_saturation_threshold: float = 0.85
 
     def roll_env_kwargs(self) -> dict[str, float]:
@@ -47,6 +48,9 @@ class RollCurriculumStage:
             "k_smooth": self.k_smooth,
             "k_action_effort": self.k_action_effort,
             "k_thruster_saturation": self.k_thruster_saturation,
+            "k_post_target_roll_through_torque": (
+                self.k_post_target_roll_through_torque
+            ),
             "thruster_saturation_threshold": self.thruster_saturation_threshold,
             "excess_pitch_deg": self.excess_pitch_deg,
             "excess_depth_error_m": self.excess_depth_error_m,
@@ -705,6 +709,33 @@ ROLL_CURRICULUM_STAGES: dict[str, RollCurriculumStage] = {
         k_action_effort=0.005,
         k_thruster_saturation=0.20,
         thruster_saturation_threshold=0.80,
+    ),
+    "c3r_720_post_target_tx_brake": RollCurriculumStage(
+        name="c3r_720_post_target_tx_brake",
+        description="Preserve c3l reach while penalizing same-direction roll torque after the 720 target is reached.",
+        target_roll_deg=720.0,
+        episode_length_s=20.0,
+        settle_window_s=0.15,
+        k_prog=6.0,
+        k_xy=0.28,
+        k_pitch=1.0,
+        k_yaw=0.4,
+        k_depth=0.55,
+        k_smooth=0.012,
+        excess_pitch_deg=80.0,
+        excess_depth_error_m=2.0,
+        excess_xy_drift_m=2.0,
+        settle_pitch_limit_deg=45.0,
+        settle_yaw_limit_deg=90.0,
+        settle_ang_vel_limit_rad_s=2.0,
+        settle_depth_error_limit_m=1.5,
+        settle_xy_drift_limit_m=0.9,
+        terminal_success_weight=220.0,
+        terminal_failure_weight=-55.0,
+        k_action_effort=0.003,
+        k_thruster_saturation=0.10,
+        k_post_target_roll_through_torque=0.03,
+        thruster_saturation_threshold=0.85,
     ),
     "c3f_720_hold_0p10_soft": RollCurriculumStage(
         name="c3f_720_hold_0p10_soft",

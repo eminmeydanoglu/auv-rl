@@ -29,6 +29,7 @@ def make_roll_env_cfg(
     k_smooth: float = 0.01,
     k_action_effort: float = 0.0,
     k_thruster_saturation: float = 0.0,
+    k_post_target_roll_through_torque: float = 0.0,
     thruster_saturation_threshold: float = 0.85,
     excess_pitch_deg: float = 80.0,
     excess_depth_error_m: float = 1.0,
@@ -56,6 +57,11 @@ def make_roll_env_cfg(
         raise ValueError(
             "k_thruster_saturation must be non-negative, "
             f"got {k_thruster_saturation}."
+        )
+    if k_post_target_roll_through_torque < 0.0:
+        raise ValueError(
+            "k_post_target_roll_through_torque must be non-negative, "
+            f"got {k_post_target_roll_through_torque}."
         )
     if not 0.0 <= thruster_saturation_threshold < 1.0:
         raise ValueError(
@@ -174,6 +180,16 @@ def make_roll_env_cfg(
             params={
                 "action_name": "body_wrench",
                 "threshold": thruster_saturation_threshold,
+            },
+        )
+    if k_post_target_roll_through_torque > 0.0:
+        cfg.rewards["post_target_roll_through_torque"] = RewardTermCfg(
+            func=mdp.post_target_roll_through_torque_penalty,
+            weight=-k_post_target_roll_through_torque,
+            params={
+                "roll_direction": roll_direction,
+                "target_roll_rad": target_roll_rad,
+                "action_name": "body_wrench",
             },
         )
 

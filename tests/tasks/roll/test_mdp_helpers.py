@@ -234,6 +234,52 @@ def test_action_effort_reward_uses_mean_squared_action() -> None:
     assert torch.allclose(value, torch.tensor([0.015]))
 
 
+@pytest.mark.parametrize(
+    ("roll_direction", "tx_norm", "expected"),
+    [
+        (1, 1.0, 1.0),
+        (1, -1.0, 0.0),
+        (-1, -0.5, 0.25),
+        (-1, 0.5, 0.0),
+    ],
+)
+def test_post_target_roll_through_torque_penalty_is_direction_aware(
+    roll_direction: int,
+    tx_norm: float,
+    expected: float,
+) -> None:
+    env = _make_env()
+    state = get_roll_task_state(env)
+    target_roll_rad = 4.0 * math.pi
+    state.phi_total_rad[:] = float(roll_direction) * target_roll_rad
+    env.action_manager.action[:, 3] = tx_norm
+
+    value = mdp.post_target_roll_through_torque_penalty(
+        env,
+        roll_direction=roll_direction,
+        target_roll_rad=target_roll_rad,
+    )
+
+    assert torch.allclose(value, torch.tensor([expected]))
+
+
+def test_post_target_roll_through_torque_penalty_is_inactive_before_target() -> None:
+    env = _make_env()
+    state = get_roll_task_state(env)
+    target_roll_rad = 4.0 * math.pi
+    state.phi_total_rad[:] = 0.95 * target_roll_rad
+    state.target_reached[:] = False
+    env.action_manager.action[:, 3] = 1.0
+
+    value = mdp.post_target_roll_through_torque_penalty(
+        env,
+        roll_direction=1,
+        target_roll_rad=target_roll_rad,
+    )
+
+    assert torch.allclose(value, torch.zeros(1))
+
+
 def test_thruster_saturation_cost_penalizes_only_threshold_excess() -> None:
     env = _make_env()
     value = mdp.thruster_saturation_cost(env, threshold=0.8)

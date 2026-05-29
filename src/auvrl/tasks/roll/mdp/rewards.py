@@ -131,6 +131,37 @@ def body_wrench_action_effort(
     return torch.mean(torch.square(action), dim=1)
 
 
+def post_target_roll_through_torque_penalty(
+    env: ManagerBasedRlEnv,
+    roll_direction: int,
+    target_roll_rad: float,
+    action_name: str = "body_wrench",
+    tx_index: int = 3,
+    entity_name: str = "robot",
+) -> torch.Tensor:
+    """Penalize same-direction roll torque after the roll target is reached."""
+    if roll_direction not in (-1, 1):
+        raise ValueError(f"roll_direction must be +/-1, got {roll_direction}.")
+    if target_roll_rad <= 0.0:
+        raise ValueError(f"target_roll_rad must be positive, got {target_roll_rad}.")
+
+    action_slice = action_term_slice(env, action_name)
+    action = env.action_manager.action[:, action_slice]
+    if not 0 <= tx_index < action.shape[1]:
+        raise ValueError(
+            f"tx_index must be in [0, {action.shape[1]}), got {tx_index}."
+        )
+
+    state = get_roll_task_state(env, entity_name=entity_name)
+    signed_progress = float(roll_direction) * state.phi_total_rad
+    post_target = state.target_reached | (signed_progress >= float(target_roll_rad))
+    roll_through_torque = torch.clamp(
+        float(roll_direction) * action[:, tx_index],
+        min=0.0,
+    )
+    return post_target.float() * torch.square(roll_through_torque)
+
+
 def thruster_saturation_cost(
     env: ManagerBasedRlEnv,
     action_name: str = "body_wrench",
@@ -193,6 +224,7 @@ __all__ = [
     "body_wrench_action_rate_l2",
     "depth_hold_penalty",
     "pitch_penalty",
+    "post_target_roll_through_torque_penalty",
     "roll_progress",
     "terminal_failure_reward",
     "terminal_success_reward",

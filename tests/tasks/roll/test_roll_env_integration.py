@@ -457,6 +457,25 @@ def test_roll_curriculum_xy_tight_success_requires_lower_settle_drift() -> None:
     assert success_params["settle_xy_drift_limit_m"] == 1.25
 
 
+def test_roll_curriculum_post_target_tx_brake_adds_direction_aware_penalty() -> None:
+    stage = ROLL_CURRICULUM_STAGES["c3r_720_post_target_tx_brake"]
+    cfg = make_taluy_roll_env_cfg(
+        num_envs=1,
+        curriculum_stage=stage.name,
+    )
+
+    term = cfg.rewards["post_target_roll_through_torque"]
+    assert term.weight == -stage.k_post_target_roll_through_torque
+    assert term.params["roll_direction"] == 1
+    assert term.params["target_roll_rad"] == math.radians(stage.target_roll_deg)
+    assert term.params["action_name"] == "body_wrench"
+    assert cfg.rewards["roll_progress"].weight == stage.k_prog
+    step_dt = cfg.sim.mujoco.timestep * cfg.decimation
+    assert cfg.terminations["task_success"].params["settle_steps"] == math.ceil(
+        stage.settle_window_s / step_dt
+    )
+
+
 def test_post_c3l_auto_curriculum_defaults_to_c3l_start_and_c3q_goal() -> None:
     cfg = make_taluy_roll_env_cfg(
         num_envs=1,
