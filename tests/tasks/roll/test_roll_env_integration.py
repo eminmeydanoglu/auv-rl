@@ -476,6 +476,25 @@ def test_roll_curriculum_post_target_tx_brake_adds_direction_aware_penalty() -> 
     )
 
 
+def test_roll_curriculum_nonroll_rate_guard_adds_targeted_rate_penalty() -> None:
+    stage = ROLL_CURRICULUM_STAGES["c3s_720_nonroll_rate_guard"]
+    cfg = make_taluy_roll_env_cfg(
+        num_envs=1,
+        curriculum_stage=stage.name,
+    )
+
+    term = cfg.rewards["nonroll_wrench_rate"]
+    assert term.weight == -stage.k_nonroll_wrench_rate
+    assert term.params["action_name"] == "body_wrench"
+    assert cfg.rewards["action_smoothness"].weight == -stage.k_smooth
+    assert "post_target_roll_through_torque" not in cfg.rewards
+    assert cfg.rewards["roll_progress"].weight == stage.k_prog
+    step_dt = cfg.sim.mujoco.timestep * cfg.decimation
+    assert cfg.terminations["task_success"].params["settle_steps"] == math.ceil(
+        stage.settle_window_s / step_dt
+    )
+
+
 def test_post_c3l_auto_curriculum_defaults_to_c3l_start_and_c3q_goal() -> None:
     cfg = make_taluy_roll_env_cfg(
         num_envs=1,

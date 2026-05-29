@@ -121,6 +121,31 @@ def body_wrench_action_rate_l2(
     return torch.sum(torch.square(delta_action), dim=1)
 
 
+def nonroll_body_wrench_action_rate_l2(
+    env: ManagerBasedRlEnv,
+    action_name: str = "body_wrench",
+    nonroll_indices: tuple[int, ...] = (0, 1, 2, 4, 5),
+) -> torch.Tensor:
+    """Return action-rate L2 on body-wrench axes except roll torque."""
+    action_slice = action_term_slice(env, action_name)
+    action = env.action_manager.action[:, action_slice]
+    if not nonroll_indices:
+        return torch.zeros(env.num_envs, dtype=action.dtype, device=action.device)
+    invalid_indices = [
+        index for index in nonroll_indices if not 0 <= int(index) < action.shape[1]
+    ]
+    if invalid_indices:
+        raise ValueError(
+            "nonroll_indices must be valid body-wrench action indices, "
+            f"got {tuple(invalid_indices)} for action dim {action.shape[1]}."
+        )
+    delta_action = (
+        action[:, list(nonroll_indices)]
+        - env.action_manager.prev_action[:, action_slice][:, list(nonroll_indices)]
+    )
+    return torch.sum(torch.square(delta_action), dim=1)
+
+
 def body_wrench_action_effort(
     env: ManagerBasedRlEnv,
     action_name: str = "body_wrench",
@@ -223,6 +248,7 @@ __all__ = [
     "body_wrench_action_effort",
     "body_wrench_action_rate_l2",
     "depth_hold_penalty",
+    "nonroll_body_wrench_action_rate_l2",
     "pitch_penalty",
     "post_target_roll_through_torque_penalty",
     "roll_progress",

@@ -28,6 +28,7 @@ def make_roll_env_cfg(
     k_depth: float = 1.0,
     k_smooth: float = 0.01,
     k_action_effort: float = 0.0,
+    k_nonroll_wrench_rate: float = 0.0,
     k_thruster_saturation: float = 0.0,
     k_post_target_roll_through_torque: float = 0.0,
     thruster_saturation_threshold: float = 0.85,
@@ -52,6 +53,11 @@ def make_roll_env_cfg(
     if k_action_effort < 0.0:
         raise ValueError(
             f"k_action_effort must be non-negative, got {k_action_effort}."
+        )
+    if k_nonroll_wrench_rate < 0.0:
+        raise ValueError(
+            "k_nonroll_wrench_rate must be non-negative, "
+            f"got {k_nonroll_wrench_rate}."
         )
     if k_thruster_saturation < 0.0:
         raise ValueError(
@@ -171,6 +177,12 @@ def make_roll_env_cfg(
         cfg.rewards["action_effort"] = RewardTermCfg(
             func=mdp.body_wrench_action_effort,
             weight=-k_action_effort,
+            params={"action_name": "body_wrench"},
+        )
+    if k_nonroll_wrench_rate > 0.0:
+        cfg.rewards["nonroll_wrench_rate"] = RewardTermCfg(
+            func=mdp.nonroll_body_wrench_action_rate_l2,
+            weight=-k_nonroll_wrench_rate,
             params={"action_name": "body_wrench"},
         )
     if k_thruster_saturation > 0.0:

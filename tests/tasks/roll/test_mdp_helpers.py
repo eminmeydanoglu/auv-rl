@@ -228,6 +228,39 @@ def test_action_rate_reward_matches_l2_delta() -> None:
     assert torch.allclose(value, torch.tensor([0.09]))
 
 
+def test_nonroll_action_rate_reward_ignores_roll_torque_delta() -> None:
+    env = _make_env()
+    env.action_manager.action[:] = torch.tensor(
+        [[1.0, -1.0, 0.5, 1.0, 0.25, -0.5]],
+        dtype=torch.float,
+    )
+    env.action_manager.prev_action[:] = torch.tensor(
+        [[0.5, -0.5, 0.25, -1.0, -0.25, 0.5]],
+        dtype=torch.float,
+    )
+
+    value = mdp.nonroll_body_wrench_action_rate_l2(env)
+
+    expected = 0.5**2 + (-0.5) ** 2 + 0.25**2 + 0.5**2 + (-1.0) ** 2
+    assert torch.allclose(value, torch.tensor([expected]))
+
+
+def test_nonroll_action_rate_reward_is_zero_for_roll_torque_only_delta() -> None:
+    env = _make_env()
+    env.action_manager.action[:] = torch.tensor(
+        [[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]],
+        dtype=torch.float,
+    )
+    env.action_manager.prev_action[:] = torch.tensor(
+        [[0.0, 0.0, 0.0, -1.0, 0.0, 0.0]],
+        dtype=torch.float,
+    )
+
+    value = mdp.nonroll_body_wrench_action_rate_l2(env)
+
+    assert torch.allclose(value, torch.zeros(1))
+
+
 def test_action_effort_reward_uses_mean_squared_action() -> None:
     env = _make_env()
     value = mdp.body_wrench_action_effort(env)
