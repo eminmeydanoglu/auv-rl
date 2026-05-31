@@ -784,6 +784,10 @@ class PostC3RSettleSaturationCurriculum(PostC3LPolishCurriculum):
         "global_action_regularization",
         "saturation_weight",
         "saturation_threshold",
+        "hard_pitch_envelope",
+        "settle_attitude",
+        "settle_depth",
+        "settle_xy",
         "settle_window",
         "settle_ang_vel",
         "done",
@@ -809,6 +813,13 @@ class PostC3RSettleSaturationCurriculum(PostC3LPolishCurriculum):
         ),
         "saturation_weight": ("k_thruster_saturation",),
         "saturation_threshold": ("thruster_saturation_threshold",),
+        "hard_pitch_envelope": ("excess_pitch_deg",),
+        "settle_attitude": (
+            "settle_pitch_limit_deg",
+            "settle_yaw_limit_deg",
+        ),
+        "settle_depth": ("settle_depth_error_limit_m",),
+        "settle_xy": ("settle_xy_drift_limit_m",),
         "settle_window": ("settle_window_s",),
         "settle_ang_vel": ("settle_ang_vel_limit_rad_s",),
     }
@@ -833,14 +844,6 @@ class PostC3RSettleSaturationCurriculum(PostC3LPolishCurriculum):
                 "post-c3r settle-saturation requires "
                 "goal_stage='c3t_720_c3r_settle_sat_guard'."
             )
-        for field in (
-            "excess_pitch_deg",
-            "settle_pitch_limit_deg",
-            "settle_yaw_limit_deg",
-            "settle_depth_error_limit_m",
-            "settle_xy_drift_limit_m",
-        ):
-            self._values[field] = self._goal[field]
         self._action_rate_l2 = deque(maxlen=self._schedule.rolling_window_episodes)
         self._nonroll_action_rate_l2 = deque(
             maxlen=self._schedule.rolling_window_episodes

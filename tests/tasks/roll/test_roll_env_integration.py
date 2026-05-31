@@ -573,14 +573,19 @@ def test_post_c3r_auto_curriculum_defaults_to_c3r_start_and_c3t_goal() -> None:
     assert cfg.rewards["nonroll_wrench_rate"].weight == -0.0
     assert cfg.rewards["thruster_saturation"].weight == -0.10
     assert cfg.rewards["post_target_roll_through_torque"].weight == -0.03
-    assert cfg.terminations["excess_pitch"].params["limit_rad"] == math.radians(45.0)
-    assert cfg.terminations["excess_depth_error"].params["limit_m"] == 0.60
-    assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 0.80
+    assert cfg.terminations["excess_pitch"].params["limit_rad"] == math.radians(80.0)
+    assert cfg.terminations["excess_depth_error"].params["limit_m"] == 2.0
+    assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 2.0
     success_params = cfg.terminations["task_success"].params
-    assert success_params["settle_pitch_limit_rad"] == math.radians(30.0)
-    assert success_params["settle_yaw_limit_rad"] == math.radians(15.0)
-    assert success_params["settle_depth_error_limit_m"] == 0.35
-    assert success_params["settle_xy_drift_limit_m"] == 0.60
+    assert success_params["settle_pitch_limit_rad"] == math.radians(45.0)
+    assert success_params["settle_yaw_limit_rad"] == math.radians(90.0)
+    assert success_params["settle_depth_error_limit_m"] == 1.5
+    assert success_params["settle_xy_drift_limit_m"] == 0.90
+    assert schedule.goal_stage.excess_pitch_deg == 45.0
+    assert schedule.goal_stage.settle_pitch_limit_deg == 30.0
+    assert schedule.goal_stage.settle_yaw_limit_deg == 15.0
+    assert schedule.goal_stage.settle_depth_error_limit_m == 0.35
+    assert schedule.goal_stage.settle_xy_drift_limit_m == 0.60
 
 
 def test_post_c3l_auto_curriculum_initial_reset_logs_state() -> None:

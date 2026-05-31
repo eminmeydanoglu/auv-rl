@@ -77,21 +77,6 @@ def make_taluy_roll_env_cfg(
         stage = get_roll_curriculum_stage(curriculum_stage)
         roll_kwargs.update(stage.roll_env_kwargs())
         roll_kwargs["roll_direction"] = roll_direction
-        if auto_curriculum == POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM:
-            goal_stage = get_roll_curriculum_stage(auto_curriculum_goal_stage)
-            roll_kwargs.update(
-                {
-                    "excess_pitch_deg": goal_stage.excess_pitch_deg,
-                    "excess_depth_error_m": goal_stage.excess_depth_error_m,
-                    "excess_xy_drift_m": goal_stage.excess_xy_drift_m,
-                    "settle_pitch_limit_deg": goal_stage.settle_pitch_limit_deg,
-                    "settle_yaw_limit_deg": goal_stage.settle_yaw_limit_deg,
-                    "settle_depth_error_limit_m": (
-                        goal_stage.settle_depth_error_limit_m
-                    ),
-                    "settle_xy_drift_limit_m": goal_stage.settle_xy_drift_limit_m,
-                }
-            )
         if episode_length_s is None:
             episode_length_s = stage.episode_length_s
 

@@ -303,7 +303,7 @@ def test_post_c3l_polish_rolls_back_xy_before_settle_xy_phase() -> None:
     assert state["rollback_blocked_by_xy"] == 1.0
 
 
-def test_post_c3r_settle_saturation_starts_from_tight_guard_values() -> None:
+def test_post_c3r_settle_saturation_starts_from_c3r_guard_values() -> None:
     term, env, schedule = _c3r_term()
     env_ids = torch.tensor([0, 1], dtype=torch.long)
 
@@ -314,19 +314,19 @@ def test_post_c3r_settle_saturation_starts_from_tight_guard_values() -> None:
     assert state["k_action_effort"] == 0.003
     assert state["k_nonroll_wrench_rate"] == 0.0
     assert state["k_post_target_roll_through_torque"] == 0.03
-    assert state["settle_pitch_limit_deg"] == 30.0
-    assert state["settle_yaw_limit_deg"] == 15.0
-    assert state["settle_depth_error_limit_m"] == 0.35
-    assert state["settle_xy_drift_limit_m"] == 0.60
-    assert state["excess_pitch_deg"] == 45.0
+    assert state["settle_pitch_limit_deg"] == 45.0
+    assert state["settle_yaw_limit_deg"] == 90.0
+    assert state["settle_depth_error_limit_m"] == 1.5
+    assert state["settle_xy_drift_limit_m"] == 0.90
+    assert state["excess_pitch_deg"] == 80.0
     success_params = env.termination_manager.get_term_cfg("task_success").params
-    assert success_params["settle_pitch_limit_rad"] == torch.pi * 30.0 / 180.0
-    assert success_params["settle_yaw_limit_rad"] == torch.pi * 15.0 / 180.0
-    assert success_params["settle_depth_error_limit_m"] == 0.35
-    assert success_params["settle_xy_drift_limit_m"] == 0.60
+    assert success_params["settle_pitch_limit_rad"] == torch.pi * 45.0 / 180.0
+    assert success_params["settle_yaw_limit_rad"] == torch.pi * 90.0 / 180.0
+    assert success_params["settle_depth_error_limit_m"] == 1.5
+    assert success_params["settle_xy_drift_limit_m"] == 0.90
     assert (
         env.termination_manager.get_term_cfg("excess_pitch").params["limit_rad"]
-        == torch.pi * 45.0 / 180.0
+        == torch.pi * 80.0 / 180.0
     )
 
 
