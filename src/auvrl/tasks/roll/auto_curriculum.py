@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 
 POST_C3L_POLISH_AUTO_CURRICULUM = "post_c3l_polish"
+POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM = "post_c3r_settle_saturation"
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,36 @@ class PostC3LPolishSchedule:
     k_action_effort_step: float = 0.00015
     k_thruster_saturation_step: float = 0.005
     thruster_saturation_threshold_step: float = 0.01
+    phase_cap_rollback_threshold: int = 2
+
+
+@dataclass(frozen=True)
+class PostC3RSettleSaturationSchedule(PostC3LPolishSchedule):
+    success_advance_threshold: float = 0.98
+    success_rollback_threshold: float = 0.95
+    xy_peak_advance_max_m: float = 0.50
+    xy_peak_rollback_max_m: float = 0.70
+    pre_settle_xy_rollback_max_m: float = 0.70
+    pitch_peak_advance_max_deg: float = 30.0
+    pitch_peak_rollback_max_deg: float = 45.0
+    yaw_abs_advance_max_rad: float = math.radians(10.0)
+    yaw_abs_rollback_max_rad: float = math.radians(20.0)
+    depth_abs_advance_max_m: float = 0.25
+    depth_abs_rollback_max_m: float = 0.50
+    saturation_advance_max: float = 0.42
+    saturation_rollback_max: float = 0.60
+    action_rate_advance_max: float = 0.35
+    action_rate_rollback_max: float = 0.80
+    nonroll_action_rate_advance_max: float = 0.35
+    nonroll_action_rate_rollback_max: float = 0.80
+    post_target_roll_through_advance_max: float = 0.20
+    post_target_roll_through_rollback_max: float = 0.50
+    root_ang_speed_rollback_max_rad_s: float = 2.10
+    k_smooth_step: float = 0.001
+    k_action_effort_step: float = 0.00025
+    k_nonroll_wrench_rate_step: float = 0.001
+    k_post_target_roll_through_torque_step: float = 0.005
+    k_thruster_saturation_step: float = 0.01
 
 
 class PostC3LPolishCurriculum:
@@ -149,9 +180,18 @@ class PostC3LPolishCurriculum:
         self._phase_completed_episodes = 0
         self._phase_advance_count = 0
         self._phase_rollback_count = 0
+        self._phase_failed_step_count = 0
         self._last_update = 0
         self._last_safe = 0
         self._last_rollback = 0
+        self._last_cap = 0
+        self._cap_count = 0
+        self._phase_cap_pending = False
+        self._capped_phases: set[str] = set()
+        self._last_safe_values = dict(self._values)
+        self._last_safe_phase_index = self._phase_index
+        self._last_safe_success_rate = 0.0
+        self._last_safe_target_reached_rate = 0.0
         self._success = deque(maxlen=schedule.rolling_window_episodes)
         self._target_reached = deque(maxlen=schedule.rolling_window_episodes)
         self._time_out = deque(maxlen=schedule.rolling_window_episodes)
@@ -180,6 +220,9 @@ class PostC3LPolishCurriculum:
         self._last_update = 0
         self._last_safe = int(self._can_advance())
         self._last_rollback = 0
+        self._last_cap = 0
+        if self._last_safe:
+            self._remember_safe_values()
         if self._completed_since_update >= self._schedule.min_completed_episodes_per_update:
             self._update_curriculum()
             self._completed_since_update = 0
@@ -226,7 +269,12 @@ class PostC3LPolishCurriculum:
         self._extend_metric(env, ids, "depth_abs_error_m", self._depth_abs_error_m)
         self._extend_metric(env, ids, "pitch_abs_rad", self._pitch_abs_rad)
         self._extend_metric(env, ids, "yaw_abs_error_rad", self._yaw_abs_error_rad)
-        self._extend_metric(env, ids, "root_ang_speed_rad_s", self._root_ang_speed_rad_s)
+        self._extend_first_available_metric(
+            env,
+            ids,
+            ("root_ang_speed_rad_s_last", "root_ang_speed_rad_s"),
+            self._root_ang_speed_rad_s,
+        )
         self._extend_metric(env, ids, "body_wrench_action_l2", self._action_l2)
         self._extend_metric(env, ids, "body_wrench_saturation_fraction", self._saturation)
         completed = int(ids.numel())
@@ -245,6 +293,19 @@ class PostC3LPolishCurriculum:
         if values is None:
             return
         target.extend(float(item) for item in values.detach().cpu().tolist())
+
+    def _extend_first_available_metric(
+        self,
+        env: ManagerBasedRlEnv,
+        env_ids: torch.Tensor,
+        names: tuple[str, ...],
+        target: deque[float],
+    ) -> None:
+        for name in names:
+            values = _episode_metric_values(env, env_ids, name)
+            if values is not None:
+                target.extend(float(item) for item in values.detach().cpu().tolist())
+                return
 
     def _extend_termination(
         self,
@@ -266,6 +327,13 @@ class PostC3LPolishCurriculum:
             if self._observe_count >= self._schedule.observe_updates and self._can_advance():
                 self._set_phase_index(1)
             return
+        if self._phase_cap_pending:
+            if self._must_rollback():
+                self._rollback_phase()
+                return
+            if self._can_advance():
+                self._cap_phase()
+            return
         if self._must_rollback():
             self._rollback_phase()
             return
@@ -277,6 +345,7 @@ class PostC3LPolishCurriculum:
 
     def _advance_phase(self) -> None:
         phase = self._PHASES[self._phase_index]
+        self._remember_safe_values()
         self._move_phase(phase, self._goal)
         self._advance_count += 1
         self._phase_advance_count += 1
@@ -285,19 +354,44 @@ class PostC3LPolishCurriculum:
             self._set_phase_index(min(self._phase_index + 1, len(self._PHASES) - 1))
 
     def _rollback_phase(self) -> None:
+        was_cap_pending = self._phase_cap_pending
         phase = self._PHASES[self._phase_index]
         if phase == "done" and self._phase_index > 1:
             self._set_phase_index(self._phase_index - 1)
             phase = self._PHASES[self._phase_index]
-        changed = self._move_phase(phase, self._start)
-        if not changed and self._phase_index > 1:
+        phase_had_progress = self._phase_has_progress(phase)
+        changed = False
+        if phase_had_progress and self._last_safe_phase_index == self._phase_index:
+            changed = self._restore_last_safe_values()
+        if not changed:
+            changed = self._move_phase(phase, self._start)
+        if not changed and self._phase_index > 1 and not was_cap_pending:
             self._set_phase_index(self._phase_index - 1)
             phase = self._PHASES[self._phase_index]
             self._move_phase(phase, self._start)
+            phase_had_progress = self._phase_has_progress(phase)
         self._rollback_count += 1
         self._phase_rollback_count += 1
         self._last_update = -1
         self._last_rollback = 1
+        threshold = max(1, int(self._schedule.phase_cap_rollback_threshold))
+        if (
+            phase != "done"
+            and phase_had_progress
+        ):
+            self._phase_failed_step_count += 1
+        if self._phase_failed_step_count >= threshold:
+            self._phase_cap_pending = True
+
+    def _cap_phase(self) -> None:
+        phase = self._PHASES[self._phase_index]
+        if phase == "done":
+            return
+        self._capped_phases.add(phase)
+        self._cap_count += 1
+        self._last_cap = 1
+        self._phase_cap_pending = False
+        self._set_phase_index(min(self._phase_index + 1, len(self._PHASES) - 1))
 
     def _set_phase_index(self, phase_index: int) -> None:
         if phase_index == self._phase_index:
@@ -307,6 +401,38 @@ class PostC3LPolishCurriculum:
         self._phase_completed_episodes = 0
         self._phase_advance_count = 0
         self._phase_rollback_count = 0
+        self._phase_failed_step_count = 0
+        self._phase_cap_pending = False
+
+    def _remember_safe_values(self) -> None:
+        self._last_safe_values = dict(self._values)
+        self._last_safe_phase_index = self._phase_index
+        self._last_safe_success_rate = _mean(self._success)
+        self._last_safe_target_reached_rate = _mean(self._target_reached)
+
+    def _restore_last_safe_values(self) -> bool:
+        changed = any(
+            not math.isclose(
+                self._values[key],
+                self._last_safe_values[key],
+                rel_tol=0.0,
+                abs_tol=1.0e-12,
+            )
+            for key in self._values
+        )
+        self._values = dict(self._last_safe_values)
+        return changed
+
+    def _phase_has_progress(self, phase: str) -> bool:
+        return any(
+            not math.isclose(
+                self._values[field],
+                self._start[field],
+                rel_tol=0.0,
+                abs_tol=1.0e-12,
+            )
+            for field in self._PHASE_FIELDS.get(phase, ())
+        )
 
     def _move_phase(self, phase: str, target_values: dict[str, float]) -> bool:
         changed = False
@@ -400,12 +526,19 @@ class PostC3LPolishCurriculum:
             "safe": float(self._last_safe),
             "last_update": float(self._last_update),
             "last_rollback": float(self._last_rollback),
+            "last_cap": float(self._last_cap),
             "advance_count": float(self._advance_count),
             "rollback_count": float(self._rollback_count),
+            "cap_count": float(self._cap_count),
             "phase_update_count": float(self._phase_update_count),
             "phase_completed_episodes": float(self._phase_completed_episodes),
             "phase_advance_count": float(self._phase_advance_count),
             "phase_rollback_count": float(self._phase_rollback_count),
+            "phase_failed_step_count": float(self._phase_failed_step_count),
+            "phase_cap_pending": float(self._phase_cap_pending),
+            "last_safe_phase_index": float(self._last_safe_phase_index),
+            "last_safe_success_rate": self._last_safe_success_rate,
+            "last_safe_target_reached_rate": self._last_safe_target_reached_rate,
             "completed_episodes": float(self._total_completed),
             "window_episodes": float(len(self._success)),
             "success_rate": _mean(self._success),
@@ -468,6 +601,12 @@ class PostC3LPolishCurriculum:
         state.update(
             {f"phase_is_{name}": float(name == phase) for name in self._PHASES}
         )
+        state.update(
+            {
+                f"phase_capped_{name}": float(name in self._capped_phases)
+                for name in self._PHASES
+            }
+        )
         state.update(self._gate_state())
         return state
 
@@ -482,8 +621,10 @@ class PostC3LPolishCurriculum:
             _quantile(self._pitch_peak_rad, 0.95, default=empty_metric_default)
         )
         depth_mean = _mean(self._depth_abs_error_m, default=empty_metric_default)
-        root_ang_speed_mean = _mean(
-            self._root_ang_speed_rad_s, default=empty_metric_default
+        root_ang_speed_p95 = _quantile(
+            self._root_ang_speed_rad_s,
+            0.95,
+            default=empty_metric_default,
         )
 
         success_limit = self._schedule.success_advance_threshold
@@ -508,7 +649,7 @@ class PostC3LPolishCurriculum:
         pitch_margin_to_excess_deg = (
             self._values["excess_pitch_deg"] - pitch_peak_p95_deg
         )
-        root_ang_speed_margin_rad_s = root_ang_speed_limit - root_ang_speed_mean
+        root_ang_speed_margin_rad_s = root_ang_speed_limit - root_ang_speed_p95
         depth_margin_m = depth_limit - depth_mean
         settle_xy_margin_m = settle_xy_limit - xy_peak_p95
         success_rollback_margin = (
@@ -635,6 +776,357 @@ class PostC3LPolishCurriculum:
         return max(0.0, min(1.0, _mean(progress)))
 
 
+class PostC3RSettleSaturationCurriculum(PostC3LPolishCurriculum):
+    _PHASES = (
+        "observe",
+        "post_target_brake",
+        "nonroll_rate",
+        "global_action_regularization",
+        "saturation_weight",
+        "saturation_threshold",
+        "settle_window",
+        "settle_ang_vel",
+        "done",
+    )
+
+    _REWARD_FIELDS = {
+        "k_smooth": ("action_smoothness", -1.0),
+        "k_action_effort": ("action_effort", -1.0),
+        "k_nonroll_wrench_rate": ("nonroll_wrench_rate", -1.0),
+        "k_thruster_saturation": ("thruster_saturation", -1.0),
+        "k_post_target_roll_through_torque": (
+            "post_target_roll_through_torque",
+            -1.0,
+        ),
+    }
+
+    _PHASE_FIELDS = {
+        "post_target_brake": ("k_post_target_roll_through_torque",),
+        "nonroll_rate": ("k_nonroll_wrench_rate",),
+        "global_action_regularization": (
+            "k_smooth",
+            "k_action_effort",
+        ),
+        "saturation_weight": ("k_thruster_saturation",),
+        "saturation_threshold": ("thruster_saturation_threshold",),
+        "settle_window": ("settle_window_s",),
+        "settle_ang_vel": ("settle_ang_vel_limit_rad_s",),
+    }
+
+    _STEP_FIELDS = {
+        **PostC3LPolishCurriculum._STEP_FIELDS,
+        "k_nonroll_wrench_rate": "k_nonroll_wrench_rate_step",
+        "k_post_target_roll_through_torque": (
+            "k_post_target_roll_through_torque_step"
+        ),
+    }
+
+    def __init__(self, cfg: CurriculumTermCfg, env: ManagerBasedRlEnv) -> None:
+        super().__init__(cfg=cfg, env=env)
+        if self._schedule.start_stage.name != "c3r_720_post_target_tx_brake":
+            raise ValueError(
+                "post-c3r settle-saturation requires "
+                "start_stage='c3r_720_post_target_tx_brake'."
+            )
+        if self._schedule.goal_stage.name != "c3t_720_c3r_settle_sat_guard":
+            raise ValueError(
+                "post-c3r settle-saturation requires "
+                "goal_stage='c3t_720_c3r_settle_sat_guard'."
+            )
+        for field in (
+            "excess_pitch_deg",
+            "settle_pitch_limit_deg",
+            "settle_yaw_limit_deg",
+            "settle_depth_error_limit_m",
+            "settle_xy_drift_limit_m",
+        ):
+            self._values[field] = self._goal[field]
+        self._action_rate_l2 = deque(maxlen=self._schedule.rolling_window_episodes)
+        self._nonroll_action_rate_l2 = deque(
+            maxlen=self._schedule.rolling_window_episodes
+        )
+        self._post_target_roll_through = deque(
+            maxlen=self._schedule.rolling_window_episodes
+        )
+
+    def _record_completed_episodes(
+        self,
+        env: ManagerBasedRlEnv,
+        env_ids: torch.Tensor,
+    ) -> None:
+        super()._record_completed_episodes(env, env_ids)
+        counts = getattr(env.metrics_manager, "_step_count", None)
+        if counts is None or env_ids.numel() == 0:
+            return
+        ids = env_ids[counts[env_ids] > 0]
+        if ids.numel() == 0:
+            return
+        self._extend_metric(env, ids, "body_wrench_action_rate_l2", self._action_rate_l2)
+        self._extend_metric(
+            env,
+            ids,
+            "nonroll_body_wrench_action_rate_l2",
+            self._nonroll_action_rate_l2,
+        )
+        self._extend_metric(
+            env,
+            ids,
+            "post_target_roll_through_torque",
+            self._post_target_roll_through,
+        )
+
+    def _can_advance(self) -> bool:
+        if not self._success:
+            return False
+        gates = self._gate_state()
+        blockers = (
+            "advance_blocked_by_success",
+            "advance_blocked_by_xy",
+            "advance_blocked_by_pitch",
+            "advance_blocked_by_yaw",
+            "advance_blocked_by_depth",
+            "advance_blocked_by_post_target_roll_through",
+            "advance_blocked_by_action_rate",
+            "advance_blocked_by_nonroll_action_rate",
+            "advance_blocked_by_saturation",
+            "advance_blocked_by_root_ang_speed",
+        )
+        return not any(bool(gates[name]) for name in blockers)
+
+    def _must_rollback(self) -> bool:
+        if not self._success:
+            return False
+        gates = self._gate_state()
+        blockers = (
+            "rollback_blocked_by_success",
+            "rollback_blocked_by_xy",
+            "rollback_blocked_by_pitch",
+            "rollback_blocked_by_yaw",
+            "rollback_blocked_by_depth",
+            "rollback_blocked_by_post_target_roll_through",
+            "rollback_blocked_by_action_rate",
+            "rollback_blocked_by_nonroll_action_rate",
+            "rollback_blocked_by_saturation",
+            "rollback_blocked_by_root_ang_speed",
+        )
+        return any(bool(gates[name]) for name in blockers)
+
+    def _gate_state(self) -> dict[str, float]:
+        phase_index = self._phase_index
+        has_window = bool(self._success)
+        empty_metric_default = 0.0 if not has_window else float("inf")
+        schedule = self._schedule
+        if not isinstance(schedule, PostC3RSettleSaturationSchedule):
+            raise TypeError("schedule must be a PostC3RSettleSaturationSchedule.")
+
+        success_rate = _mean(self._success)
+        target_reached_rate = _mean(self._target_reached)
+        xy_peak_p95 = _quantile(self._xy_peak_m, 0.95, default=empty_metric_default)
+        pitch_peak_p95_deg = math.degrees(
+            _quantile(self._pitch_peak_rad, 0.95, default=empty_metric_default)
+        )
+        yaw_p95 = _quantile(
+            self._yaw_abs_error_rad,
+            0.95,
+            default=empty_metric_default,
+        )
+        depth_p95 = _quantile(
+            self._depth_abs_error_m,
+            0.95,
+            default=empty_metric_default,
+        )
+        root_ang_speed_p95 = _quantile(
+            self._root_ang_speed_rad_s,
+            0.95,
+            default=empty_metric_default,
+        )
+        saturation_mean = _mean(self._saturation, default=empty_metric_default)
+        action_rate_mean = _mean(
+            self._action_rate_l2,
+            default=empty_metric_default,
+        )
+        nonroll_action_rate_mean = _mean(
+            self._nonroll_action_rate_l2,
+            default=empty_metric_default,
+        )
+        post_target_roll_through_mean = _mean(
+            self._post_target_roll_through,
+            default=empty_metric_default,
+        )
+
+        require_post_target = phase_index >= self._PHASES.index("post_target_brake")
+        require_action_rate = phase_index >= self._PHASES.index("nonroll_rate")
+        require_saturation = phase_index >= self._PHASES.index("saturation_weight")
+        require_root_ang_speed = phase_index >= self._PHASES.index("settle_ang_vel")
+
+        success_margin = success_rate - schedule.success_advance_threshold
+        target_reached_margin = target_reached_rate - 0.99
+        xy_peak_margin_m = schedule.xy_peak_advance_max_m - xy_peak_p95
+        pitch_peak_margin_deg = schedule.pitch_peak_advance_max_deg - pitch_peak_p95_deg
+        yaw_margin_rad = schedule.yaw_abs_advance_max_rad - yaw_p95
+        depth_margin_m = schedule.depth_abs_advance_max_m - depth_p95
+        root_ang_speed_margin_rad_s = (
+            self._values["settle_ang_vel_limit_rad_s"] - root_ang_speed_p95
+        )
+        saturation_margin = schedule.saturation_advance_max - saturation_mean
+        action_rate_margin = schedule.action_rate_advance_max - action_rate_mean
+        nonroll_action_rate_margin = (
+            schedule.nonroll_action_rate_advance_max - nonroll_action_rate_mean
+        )
+        post_target_margin = (
+            schedule.post_target_roll_through_advance_max
+            - post_target_roll_through_mean
+        )
+
+        rollback_success_margin = success_rate - schedule.success_rollback_threshold
+        rollback_xy_margin_m = schedule.xy_peak_rollback_max_m - xy_peak_p95
+        rollback_pitch_margin_deg = (
+            schedule.pitch_peak_rollback_max_deg - pitch_peak_p95_deg
+        )
+        rollback_yaw_margin_rad = schedule.yaw_abs_rollback_max_rad - yaw_p95
+        rollback_depth_margin_m = schedule.depth_abs_rollback_max_m - depth_p95
+        rollback_saturation_margin = (
+            schedule.saturation_rollback_max - saturation_mean
+        )
+        rollback_action_rate_margin = (
+            schedule.action_rate_rollback_max - action_rate_mean
+        )
+        rollback_nonroll_action_rate_margin = (
+            schedule.nonroll_action_rate_rollback_max - nonroll_action_rate_mean
+        )
+        rollback_post_target_margin = (
+            schedule.post_target_roll_through_rollback_max
+            - post_target_roll_through_mean
+        )
+        rollback_root_ang_speed_margin = (
+            schedule.root_ang_speed_rollback_max_rad_s - root_ang_speed_p95
+        )
+
+        return {
+            "advance_success_margin": success_margin,
+            "advance_target_reached_margin": target_reached_margin,
+            "advance_xy_peak_margin_m": xy_peak_margin_m,
+            "advance_pitch_peak_margin_deg": pitch_peak_margin_deg,
+            "advance_yaw_margin_rad": yaw_margin_rad,
+            "advance_depth_margin_m": depth_margin_m,
+            "root_ang_speed_margin_rad_s": root_ang_speed_margin_rad_s,
+            "advance_saturation_margin": saturation_margin,
+            "advance_action_rate_margin": action_rate_margin,
+            "advance_nonroll_action_rate_margin": nonroll_action_rate_margin,
+            "advance_post_target_roll_through_margin": post_target_margin,
+            "advance_success_limit": schedule.success_advance_threshold,
+            "advance_xy_peak_limit_m": schedule.xy_peak_advance_max_m,
+            "advance_pitch_peak_limit_deg": schedule.pitch_peak_advance_max_deg,
+            "advance_yaw_limit_rad": schedule.yaw_abs_advance_max_rad,
+            "advance_depth_limit_m": schedule.depth_abs_advance_max_m,
+            "advance_root_ang_speed_limit_rad_s": self._values[
+                "settle_ang_vel_limit_rad_s"
+            ],
+            "advance_saturation_limit": schedule.saturation_advance_max,
+            "advance_action_rate_limit": schedule.action_rate_advance_max,
+            "advance_nonroll_action_rate_limit": (
+                schedule.nonroll_action_rate_advance_max
+            ),
+            "advance_post_target_roll_through_limit": (
+                schedule.post_target_roll_through_advance_max
+            ),
+            "rollback_success_margin": rollback_success_margin,
+            "rollback_xy_peak_margin_m": rollback_xy_margin_m,
+            "rollback_pitch_peak_margin_deg": rollback_pitch_margin_deg,
+            "rollback_yaw_margin_rad": rollback_yaw_margin_rad,
+            "rollback_depth_margin_m": rollback_depth_margin_m,
+            "rollback_saturation_margin": rollback_saturation_margin,
+            "rollback_action_rate_margin": rollback_action_rate_margin,
+            "rollback_nonroll_action_rate_margin": rollback_nonroll_action_rate_margin,
+            "rollback_post_target_roll_through_margin": rollback_post_target_margin,
+            "rollback_root_ang_speed_margin": rollback_root_ang_speed_margin,
+            "rollback_success_limit": schedule.success_rollback_threshold,
+            "rollback_xy_peak_limit_m": schedule.xy_peak_rollback_max_m,
+            "rollback_pitch_peak_limit_deg": schedule.pitch_peak_rollback_max_deg,
+            "rollback_yaw_limit_rad": schedule.yaw_abs_rollback_max_rad,
+            "rollback_depth_limit_m": schedule.depth_abs_rollback_max_m,
+            "rollback_saturation_limit": schedule.saturation_rollback_max,
+            "rollback_action_rate_limit": schedule.action_rate_rollback_max,
+            "rollback_nonroll_action_rate_limit": (
+                schedule.nonroll_action_rate_rollback_max
+            ),
+            "rollback_post_target_roll_through_limit": (
+                schedule.post_target_roll_through_rollback_max
+            ),
+            "rollback_root_ang_speed_limit_rad_s": (
+                schedule.root_ang_speed_rollback_max_rad_s
+            ),
+            "advance_blocked_by_success": float(
+                success_margin < 0.0 or target_reached_margin < 0.0
+            ),
+            "advance_blocked_by_xy": float(xy_peak_margin_m < 0.0),
+            "advance_blocked_by_pitch": float(pitch_peak_margin_deg < 0.0),
+            "advance_blocked_by_yaw": float(yaw_margin_rad < 0.0),
+            "advance_blocked_by_depth": float(depth_margin_m < 0.0),
+            "advance_blocked_by_post_target_roll_through": float(
+                require_post_target and post_target_margin < 0.0
+            ),
+            "advance_blocked_by_action_rate": float(
+                require_action_rate and action_rate_margin < 0.0
+            ),
+            "advance_blocked_by_nonroll_action_rate": float(
+                require_action_rate and nonroll_action_rate_margin < 0.0
+            ),
+            "advance_blocked_by_saturation": float(
+                require_saturation and saturation_margin < 0.0
+            ),
+            "advance_blocked_by_root_ang_speed": float(
+                require_root_ang_speed and root_ang_speed_margin_rad_s < 0.0
+            ),
+            "rollback_blocked_by_success": float(rollback_success_margin < 0.0),
+            "rollback_blocked_by_xy": float(rollback_xy_margin_m < 0.0),
+            "rollback_blocked_by_pitch": float(rollback_pitch_margin_deg < 0.0),
+            "rollback_blocked_by_yaw": float(rollback_yaw_margin_rad < 0.0),
+            "rollback_blocked_by_depth": float(rollback_depth_margin_m < 0.0),
+            "rollback_blocked_by_post_target_roll_through": float(
+                rollback_post_target_margin < 0.0
+            ),
+            "rollback_blocked_by_action_rate": float(
+                rollback_action_rate_margin < 0.0
+            ),
+            "rollback_blocked_by_nonroll_action_rate": float(
+                rollback_nonroll_action_rate_margin < 0.0
+            ),
+            "rollback_blocked_by_saturation": float(
+                rollback_saturation_margin < 0.0
+            ),
+            "rollback_blocked_by_root_ang_speed": float(
+                rollback_root_ang_speed_margin < 0.0
+            ),
+        }
+
+    def _state(self) -> dict[str, float]:
+        state = super()._state()
+        state.update(
+            {
+                "k_nonroll_wrench_rate": self._values["k_nonroll_wrench_rate"],
+                "k_post_target_roll_through_torque": self._values[
+                    "k_post_target_roll_through_torque"
+                ],
+                "action_rate_l2_mean": _mean(self._action_rate_l2),
+                "action_rate_l2_p95": _quantile(self._action_rate_l2, 0.95),
+                "nonroll_action_rate_l2_mean": _mean(self._nonroll_action_rate_l2),
+                "nonroll_action_rate_l2_p95": _quantile(
+                    self._nonroll_action_rate_l2,
+                    0.95,
+                ),
+                "post_target_roll_through_mean": _mean(
+                    self._post_target_roll_through
+                ),
+                "post_target_roll_through_p95": _quantile(
+                    self._post_target_roll_through,
+                    0.95,
+                ),
+            }
+        )
+        return state
+
+
 def build_post_c3l_polish_curriculum(
     *,
     start_stage: RollCurriculumStage,
@@ -655,6 +1147,26 @@ def build_post_c3l_polish_curriculum(
     }
 
 
+def build_post_c3r_settle_saturation_curriculum(
+    *,
+    start_stage: RollCurriculumStage,
+    goal_stage: RollCurriculumStage,
+    term_name: str = POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM,
+    **schedule_overrides: Any,
+) -> dict[str, CurriculumTermCfg]:
+    schedule = PostC3RSettleSaturationSchedule(
+        start_stage=start_stage,
+        goal_stage=goal_stage,
+        **schedule_overrides,
+    )
+    return {
+        term_name: CurriculumTermCfg(
+            func=PostC3RSettleSaturationCurriculum,
+            params={"schedule": schedule},
+        )
+    }
+
+
 def _stage_values(stage: RollCurriculumStage) -> dict[str, float]:
     if stage.settle_xy_drift_limit_m is None:
         raise ValueError("post-c3l polish requires settle_xy_drift_limit_m.")
@@ -666,7 +1178,11 @@ def _stage_values(stage: RollCurriculumStage) -> dict[str, float]:
         "k_depth": float(stage.k_depth),
         "k_smooth": float(stage.k_smooth),
         "k_action_effort": float(stage.k_action_effort),
+        "k_nonroll_wrench_rate": float(stage.k_nonroll_wrench_rate),
         "k_thruster_saturation": float(stage.k_thruster_saturation),
+        "k_post_target_roll_through_torque": float(
+            stage.k_post_target_roll_through_torque
+        ),
         "thruster_saturation_threshold": float(stage.thruster_saturation_threshold),
         "settle_window_s": float(stage.settle_window_s),
         "settle_pitch_limit_deg": float(stage.settle_pitch_limit_deg),
@@ -733,7 +1249,11 @@ def _quantile(
 
 __all__ = [
     "POST_C3L_POLISH_AUTO_CURRICULUM",
+    "POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM",
+    "PostC3RSettleSaturationCurriculum",
+    "PostC3RSettleSaturationSchedule",
     "PostC3LPolishCurriculum",
     "PostC3LPolishSchedule",
     "build_post_c3l_polish_curriculum",
+    "build_post_c3r_settle_saturation_curriculum",
 ]

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 
 from auvrl.tasks.roll.auto_curriculum import (
+    PostC3RSettleSaturationCurriculum,
+    PostC3RSettleSaturationSchedule,
     PostC3LPolishCurriculum,
     PostC3LPolishSchedule,
 )
@@ -21,9 +24,14 @@ class _RewardManager:
             "depth_hold": SimpleNamespace(weight=0.55, params={}),
             "action_smoothness": SimpleNamespace(weight=-0.010, params={}),
             "action_effort": SimpleNamespace(weight=-0.003, params={}),
+            "nonroll_wrench_rate": SimpleNamespace(weight=-0.0, params={}),
             "thruster_saturation": SimpleNamespace(
                 weight=-0.10,
                 params={"threshold": 0.85},
+            ),
+            "post_target_roll_through_torque": SimpleNamespace(
+                weight=-0.03,
+                params={},
             ),
         }
 
@@ -79,9 +87,13 @@ class _MetricsManager:
             "pitch_abs_rad",
             "yaw_abs_error_rad",
             "root_ang_speed_rad_s",
+            "root_ang_speed_rad_s_last",
             "body_wrench_action_l2",
             "body_wrench_saturation_fraction",
             "target_reached_last",
+            "body_wrench_action_rate_l2",
+            "nonroll_body_wrench_action_rate_l2",
+            "post_target_roll_through_torque",
         ]
         self._term_cfgs = [
             SimpleNamespace(reduce="last"),
@@ -90,20 +102,31 @@ class _MetricsManager:
             SimpleNamespace(reduce="mean"),
             SimpleNamespace(reduce="mean"),
             SimpleNamespace(reduce="mean"),
+            SimpleNamespace(reduce="last"),
             SimpleNamespace(reduce="mean"),
             SimpleNamespace(reduce="mean"),
             SimpleNamespace(reduce="last"),
+            SimpleNamespace(reduce="mean"),
+            SimpleNamespace(reduce="mean"),
+            SimpleNamespace(reduce="mean"),
         ]
         self._step_count = torch.tensor([920, 920], dtype=torch.long)
         self._step_values = torch.tensor(
             [
-                [0.20, 0.30, 0.10, 0.20, 0.40, 1.0, 4.0, 0.50],
-                [0.22, 0.32, 0.12, 0.22, 0.42, 1.1, 4.2, 0.52],
+                [0.20, 0.30, 0.10, 0.20, 0.05, 1.0, 1.0, 4.0, 0.50],
+                [0.22, 0.32, 0.12, 0.22, 0.06, 1.1, 1.1, 4.2, 0.52],
             ],
             dtype=torch.float,
         )
         self._step_values = torch.cat(
-            [self._step_values, torch.ones((2, 1), dtype=torch.float)],
+            [
+                self._step_values,
+                torch.ones((2, 1), dtype=torch.float),
+                torch.tensor(
+                    [[0.20, 0.18, 0.10], [0.22, 0.20, 0.12]],
+                    dtype=torch.float,
+                ),
+            ],
             dim=1,
         )
         self._episode_sums = {
@@ -138,6 +161,26 @@ def _term() -> tuple[PostC3LPolishCurriculum, _Env, PostC3LPolishSchedule]:
     )
     env = _Env()
     return PostC3LPolishCurriculum(cfg=cfg, env=env), env, schedule
+
+
+def _c3r_term() -> tuple[
+    PostC3RSettleSaturationCurriculum,
+    _Env,
+    PostC3RSettleSaturationSchedule,
+]:
+    schedule = PostC3RSettleSaturationSchedule(
+        start_stage=get_roll_curriculum_stage("c3r_720_post_target_tx_brake"),
+        goal_stage=get_roll_curriculum_stage("c3t_720_c3r_settle_sat_guard"),
+        rolling_window_episodes=2,
+        min_completed_episodes_per_update=2,
+        observe_updates=1,
+    )
+    cfg = CurriculumTermCfg(
+        func=PostC3RSettleSaturationCurriculum,
+        params={"schedule": schedule},
+    )
+    env = _Env()
+    return PostC3RSettleSaturationCurriculum(cfg=cfg, env=env), env, schedule
 
 
 def test_post_c3l_polish_advances_attitude_depth_after_safe_windows() -> None:
@@ -258,13 +301,171 @@ def test_post_c3l_polish_rolls_back_xy_before_settle_xy_phase() -> None:
     state = term._state()
     assert state["rollback_xy_peak_limit_m"] == schedule.pre_settle_xy_rollback_max_m
     assert state["rollback_blocked_by_xy"] == 1.0
-    assert term._must_rollback()
 
-    term._phase_index = term._PHASES.index("settle_xy")
+
+def test_post_c3r_settle_saturation_starts_from_tight_guard_values() -> None:
+    term, env, schedule = _c3r_term()
+    env_ids = torch.tensor([0, 1], dtype=torch.long)
+
+    state = term(env, env_ids, schedule=schedule)
+
+    assert state["phase_is_post_target_brake"] == 1.0
+    assert state["k_smooth"] == 0.012
+    assert state["k_action_effort"] == 0.003
+    assert state["k_nonroll_wrench_rate"] == 0.0
+    assert state["k_post_target_roll_through_torque"] == 0.03
+    assert state["settle_pitch_limit_deg"] == 30.0
+    assert state["settle_yaw_limit_deg"] == 15.0
+    assert state["settle_depth_error_limit_m"] == 0.35
+    assert state["settle_xy_drift_limit_m"] == 0.60
+    assert state["excess_pitch_deg"] == 45.0
+    success_params = env.termination_manager.get_term_cfg("task_success").params
+    assert success_params["settle_pitch_limit_rad"] == torch.pi * 30.0 / 180.0
+    assert success_params["settle_yaw_limit_rad"] == torch.pi * 15.0 / 180.0
+    assert success_params["settle_depth_error_limit_m"] == 0.35
+    assert success_params["settle_xy_drift_limit_m"] == 0.60
+    assert (
+        env.termination_manager.get_term_cfg("excess_pitch").params["limit_rad"]
+        == torch.pi * 45.0 / 180.0
+    )
+
+
+def test_post_c3r_settle_saturation_advances_post_target_brake_weight() -> None:
+    term, env, schedule = _c3r_term()
+    env_ids = torch.tensor([0, 1], dtype=torch.long)
+
+    term(env, env_ids, schedule=schedule)
+    state = term(env, env_ids, schedule=schedule)
+
+    assert state["phase_is_post_target_brake"] == 1.0
+    assert state["last_update"] == 1.0
+    assert state["k_post_target_roll_through_torque"] == 0.034999999999999996
+    assert (
+        env.reward_manager.get_term_cfg("post_target_roll_through_torque").weight
+        == -state["k_post_target_roll_through_torque"]
+    )
+    assert state["advance_blocked_by_post_target_roll_through"] == 0.0
+    assert state["post_target_roll_through_mean"] == pytest.approx(0.11)
+
+
+def test_auto_curriculum_prefers_terminal_ang_speed_for_settle_gate() -> None:
+    term, env, schedule = _c3r_term()
+    env_ids = torch.tensor([0, 1], dtype=torch.long)
+    root_mean_index = env.metrics_manager.active_terms.index("root_ang_speed_rad_s")
+    root_last_index = env.metrics_manager.active_terms.index(
+        "root_ang_speed_rad_s_last"
+    )
+    env.metrics_manager._episode_sums["root_ang_speed_rad_s"] = (
+        torch.full((2,), 4.0) * env.metrics_manager._step_count.float()
+    )
+    env.metrics_manager._episode_sums["body_wrench_saturation_fraction"] = (
+        torch.full((2,), 0.2) * env.metrics_manager._step_count.float()
+    )
+    env.metrics_manager._step_values[:, root_mean_index] = 4.0
+    env.metrics_manager._step_values[:, root_last_index] = 0.6
+    term._phase_index = term._PHASES.index("settle_ang_vel")
+    term._completed_since_update = schedule.min_completed_episodes_per_update
+
+    state = term(env, env_ids, schedule=schedule)
+
+    assert state["root_ang_speed_p95_rad_s"] == pytest.approx(0.6)
+    assert state["advance_blocked_by_root_ang_speed"] == 0.0
+    assert state["last_update"] == 1.0
+    assert state["settle_ang_vel_limit_rad_s"] == pytest.approx(1.95)
+
+
+def test_post_c3r_settle_saturation_blocks_advance_on_saturation_objective() -> None:
+    term, _, _ = _c3r_term()
+    term._success.extend([1.0, 1.0])
+    term._target_reached.extend([1.0, 1.0])
+    term._xy_peak_m.extend([0.20, 0.20])
+    term._pitch_peak_rad.extend([0.30, 0.30])
+    term._depth_abs_error_m.extend([0.10, 0.10])
+    term._pitch_abs_rad.extend([0.10, 0.10])
+    term._yaw_abs_error_rad.extend([0.05, 0.05])
+    term._root_ang_speed_rad_s.extend([1.0, 1.0])
+    term._action_l2.extend([4.0, 4.0])
+    term._saturation.extend([0.50, 0.50])
+    term._action_rate_l2.extend([0.20, 0.20])
+    term._nonroll_action_rate_l2.extend([0.20, 0.20])
+    term._post_target_roll_through.extend([0.10, 0.10])
+    term._phase_index = term._PHASES.index("saturation_weight")
+
     state = term._state()
-    assert state["rollback_xy_peak_limit_m"] == 0.9
-    assert state["rollback_blocked_by_xy"] == 0.0
+
+    assert state["advance_blocked_by_saturation"] == 1.0
+    assert state["rollback_blocked_by_saturation"] == 0.0
+    assert not term._can_advance()
     assert not term._must_rollback()
+
+
+def test_post_c3r_nonroll_rate_phase_only_moves_nonroll_weight() -> None:
+    term, env, schedule = _c3r_term()
+    env_ids = torch.tensor([0, 1], dtype=torch.long)
+    term._phase_index = term._PHASES.index("nonroll_rate")
+    term._success.extend([1.0, 1.0])
+    term._target_reached.extend([1.0, 1.0])
+    term._xy_peak_m.extend([0.20, 0.20])
+    term._pitch_peak_rad.extend([0.30, 0.30])
+    term._depth_abs_error_m.extend([0.10, 0.10])
+    term._pitch_abs_rad.extend([0.10, 0.10])
+    term._yaw_abs_error_rad.extend([0.05, 0.05])
+    term._root_ang_speed_rad_s.extend([1.0, 1.0])
+    term._action_l2.extend([4.0, 4.0])
+    term._saturation.extend([0.20, 0.20])
+    term._action_rate_l2.extend([0.20, 0.20])
+    term._nonroll_action_rate_l2.extend([0.20, 0.20])
+    term._post_target_roll_through.extend([0.10, 0.10])
+    term._completed_since_update = schedule.min_completed_episodes_per_update
+
+    state = term(env, env_ids, schedule=schedule)
+
+    assert state["phase_is_nonroll_rate"] == 1.0
+    assert state["last_update"] == 1.0
+    assert state["k_nonroll_wrench_rate"] == pytest.approx(0.001)
+    assert state["k_smooth"] == 0.012
+    assert state["k_action_effort"] == 0.003
+
+
+def test_post_c3r_settle_saturation_caps_failed_step_before_next_phase() -> None:
+    term, env, schedule = _c3r_term()
+    env_ids = torch.tensor([0, 1], dtype=torch.long)
+
+    term(env, env_ids, schedule=schedule)
+    advanced_state = term(env, env_ids, schedule=schedule)
+    assert advanced_state["phase_is_post_target_brake"] == 1.0
+    assert advanced_state["k_post_target_roll_through_torque"] > 0.03
+
+    env.termination_manager.success = torch.tensor([False, False], dtype=torch.bool)
+    rollback_state = term(env, env_ids, schedule=schedule)
+
+    assert rollback_state["phase_is_post_target_brake"] == 1.0
+    assert rollback_state["last_rollback"] == 1.0
+    assert rollback_state["last_cap"] == 0.0
+    assert rollback_state["phase_failed_step_count"] == 1.0
+    assert rollback_state["phase_cap_pending"] == 0.0
+    assert rollback_state["k_post_target_roll_through_torque"] == 0.03
+
+    env.termination_manager.success = torch.tensor([True, True], dtype=torch.bool)
+    retry_state = term(env, env_ids, schedule=schedule)
+    assert retry_state["phase_is_post_target_brake"] == 1.0
+    assert retry_state["last_update"] == 1.0
+    assert retry_state["k_post_target_roll_through_torque"] > 0.03
+
+    env.termination_manager.success = torch.tensor([False, False], dtype=torch.bool)
+    second_rollback_state = term(env, env_ids, schedule=schedule)
+    assert second_rollback_state["phase_failed_step_count"] == 2.0
+    assert second_rollback_state["phase_cap_pending"] == 1.0
+    assert second_rollback_state["k_post_target_roll_through_torque"] == 0.03
+
+    env.termination_manager.success = torch.tensor([True, True], dtype=torch.bool)
+    capped_state = term(env, env_ids, schedule=schedule)
+
+    assert capped_state["last_cap"] == 1.0
+    assert capped_state["phase_cap_pending"] == 0.0
+    assert capped_state["phase_capped_post_target_brake"] == 1.0
+    assert capped_state["phase_is_nonroll_rate"] == 1.0
+    assert capped_state["k_post_target_roll_through_torque"] == 0.03
 
 
 def test_post_c3l_polish_tolerates_moderate_xy_before_settle_xy_phase() -> None:
@@ -302,3 +503,47 @@ def test_post_c3l_polish_rolls_back_attitude_depth_after_unsafe_window() -> None
     assert rollback_state["k_depth"] == 0.55
     assert env.reward_manager.get_term_cfg("xy_drift").weight == 0.28
     assert env.reward_manager.get_term_cfg("pitch_penalty").weight == 1.0
+
+
+def test_post_c3l_polish_caps_phase_only_after_recovering_safe_window() -> None:
+    term, env, schedule = _term()
+    env_ids = torch.tensor([0, 1], dtype=torch.long)
+
+    term(env, env_ids, schedule=schedule)
+    advanced_state = term(env, env_ids, schedule=schedule)
+    assert advanced_state["phase_is_attitude_depth"] == 1.0
+    assert advanced_state["k_pitch"] > 1.0
+
+    env.termination_manager.success = torch.tensor([False, False], dtype=torch.bool)
+    rollback_state = term(env, env_ids, schedule=schedule)
+
+    assert rollback_state["phase_is_attitude_depth"] == 1.0
+    assert rollback_state["last_rollback"] == 1.0
+    assert rollback_state["last_cap"] == 0.0
+    assert rollback_state["phase_failed_step_count"] == 1.0
+    assert rollback_state["phase_cap_pending"] == 0.0
+    assert rollback_state["k_xy"] == 0.28
+    assert rollback_state["k_pitch"] == 1.0
+
+    env.termination_manager.success = torch.tensor([True, True], dtype=torch.bool)
+    retry_state = term(env, env_ids, schedule=schedule)
+    assert retry_state["phase_is_attitude_depth"] == 1.0
+    assert retry_state["last_update"] == 1.0
+    assert retry_state["k_pitch"] > 1.0
+
+    env.termination_manager.success = torch.tensor([False, False], dtype=torch.bool)
+    second_rollback_state = term(env, env_ids, schedule=schedule)
+    assert second_rollback_state["phase_failed_step_count"] == 2.0
+    assert second_rollback_state["phase_cap_pending"] == 1.0
+    assert second_rollback_state["k_xy"] == 0.28
+    assert second_rollback_state["k_pitch"] == 1.0
+
+    env.termination_manager.success = torch.tensor([True, True], dtype=torch.bool)
+    capped_state = term(env, env_ids, schedule=schedule)
+
+    assert capped_state["last_cap"] == 1.0
+    assert capped_state["phase_cap_pending"] == 0.0
+    assert capped_state["phase_capped_attitude_depth"] == 1.0
+    assert capped_state["phase_is_hard_pitch_envelope"] == 1.0
+    assert capped_state["k_xy"] == 0.28
+    assert capped_state["k_pitch"] == 1.0

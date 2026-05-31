@@ -14,6 +14,8 @@ from auvrl.scripts.smoke import taluy_roll_env as roll_smoke
 from auvrl.scripts.smoke import taluy_velocity_env as velocity_smoke
 from auvrl.tasks.roll.auto_curriculum import (
     POST_C3L_POLISH_AUTO_CURRICULUM,
+    POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM,
+    PostC3RSettleSaturationSchedule,
     PostC3LPolishSchedule,
 )
 from auvrl.tasks.roll.runtime import get_roll_task_state
@@ -53,11 +55,18 @@ def test_roll_env_cfg_api_and_reset_state() -> None:
         "pitch_abs_rad",
         "yaw_abs_error_rad",
         "root_ang_speed_rad_s",
+        "root_ang_speed_rad_s_last",
         "body_wrench_action_l2",
+        "body_wrench_action_rate_l2",
+        "nonroll_body_wrench_action_rate_l2",
+        "post_target_roll_through_torque",
         "body_wrench_saturation_fraction",
         "water_current_speed_m_s",
         "hydro_wrench_norm",
     }
+    assert cfg.metrics["root_ang_speed_rad_s"].reduce == "mean"
+    assert cfg.metrics["root_ang_speed_rad_s_last"].reduce == "last"
+    assert cfg.metrics["post_target_roll_through_torque"].reduce == "last"
     assert set(cfg.terminations.keys()) == {
         "time_out",
         "nan_detected",
@@ -410,6 +419,26 @@ def test_roll_curriculum_c3_polish_experiments_match_plan() -> None:
             "sat_weight": 0.20,
             "sat_threshold": 0.80,
         },
+        "c3t_720_c3r_settle_sat_guard": {
+            "settle_steps": 38,
+            "k_prog": 6.0,
+            "k_xy": 0.28,
+            "k_pitch": 1.0,
+            "k_yaw": 0.4,
+            "k_depth": 0.55,
+            "k_smooth": 0.016,
+            "excess_xy": 0.80,
+            "settle_pitch_deg": 30.0,
+            "settle_yaw_deg": 15.0,
+            "settle_ang_vel": 1.20,
+            "settle_depth": 0.35,
+            "settle_xy": 0.60,
+            "terminal_success": 220.0,
+            "terminal_failure": -55.0,
+            "action_effort": 0.0045,
+            "sat_weight": 0.20,
+            "sat_threshold": 0.80,
+        },
     }
 
     for stage_name, values in expected.items():
@@ -444,6 +473,13 @@ def test_roll_curriculum_c3_polish_experiments_match_plan() -> None:
         assert success_params["settle_ang_vel_limit_rad_s"] == values["settle_ang_vel"]
         assert success_params["settle_depth_error_limit_m"] == values["settle_depth"]
         assert success_params["settle_xy_drift_limit_m"] == values["settle_xy"]
+        if stage_name == "c3t_720_c3r_settle_sat_guard":
+            assert cfg.rewards["nonroll_wrench_rate"].weight == -0.010
+            assert cfg.rewards["post_target_roll_through_torque"].weight == -0.06
+            assert cfg.terminations["excess_pitch"].params["limit_rad"] == math.radians(
+                45.0
+            )
+            assert cfg.terminations["excess_depth_error"].params["limit_m"] == 0.60
 
 
 def test_roll_curriculum_xy_tight_success_requires_lower_settle_drift() -> None:
@@ -516,6 +552,35 @@ def test_post_c3l_auto_curriculum_defaults_to_c3l_start_and_c3q_goal() -> None:
     assert cfg.rewards["action_effort"].weight == -0.003
     assert cfg.rewards["thruster_saturation"].weight == -0.10
     assert cfg.rewards["thruster_saturation"].params["threshold"] == 0.85
+
+
+def test_post_c3r_auto_curriculum_defaults_to_c3r_start_and_c3t_goal() -> None:
+    cfg = make_taluy_roll_env_cfg(
+        num_envs=1,
+        auto_curriculum=POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM,
+    )
+
+    assert set(cfg.curriculum.keys()) == {
+        POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM
+    }
+    term_cfg = cfg.curriculum[POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM]
+    schedule = term_cfg.params["schedule"]
+    assert isinstance(schedule, PostC3RSettleSaturationSchedule)
+    assert schedule.start_stage.name == "c3r_720_post_target_tx_brake"
+    assert schedule.goal_stage.name == "c3t_720_c3r_settle_sat_guard"
+    assert cfg.rewards["action_smoothness"].weight == -0.012
+    assert cfg.rewards["action_effort"].weight == -0.003
+    assert cfg.rewards["nonroll_wrench_rate"].weight == -0.0
+    assert cfg.rewards["thruster_saturation"].weight == -0.10
+    assert cfg.rewards["post_target_roll_through_torque"].weight == -0.03
+    assert cfg.terminations["excess_pitch"].params["limit_rad"] == math.radians(45.0)
+    assert cfg.terminations["excess_depth_error"].params["limit_m"] == 0.60
+    assert cfg.terminations["excess_xy_drift"].params["limit_m"] == 0.80
+    success_params = cfg.terminations["task_success"].params
+    assert success_params["settle_pitch_limit_rad"] == math.radians(30.0)
+    assert success_params["settle_yaw_limit_rad"] == math.radians(15.0)
+    assert success_params["settle_depth_error_limit_m"] == 0.35
+    assert success_params["settle_xy_drift_limit_m"] == 0.60
 
 
 def test_post_c3l_auto_curriculum_initial_reset_logs_state() -> None:
