@@ -31,16 +31,17 @@ except ModuleNotFoundError as exc:
         "Could not import mjlab RL dependencies. Ensure mjlab and rsl_rl are available."
     ) from exc
 
-from auvrl import (  # noqa: E402  # type: ignore[import-not-found]
+from auvrl import (
     ROLL_CURRICULUM_STAGES,
     get_roll_curriculum_stage,
     make_taluy_roll_env_cfg,
     taluy_roll_ppo_runner_cfg,
 )
-from auvrl.tasks.roll.auto_curriculum import (  # noqa: E402
+from auvrl.tasks.roll.auto_curriculum import (
     POST_C3L_POLISH_AUTO_CURRICULUM,
+    POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM,
 )
-from auvrl.tasks.roll.eval_rules import (  # noqa: E402
+from auvrl.tasks.roll.eval_rules import (
     capture_roll_eval_rules,
     write_roll_eval_rules,
 )
@@ -130,7 +131,10 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--auto-curriculum",
-        choices=(POST_C3L_POLISH_AUTO_CURRICULUM,),
+        choices=(
+            POST_C3L_POLISH_AUTO_CURRICULUM,
+            POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM,
+        ),
         default=None,
         help="Enable an adaptive roll auto-curriculum.",
     )
@@ -139,6 +143,42 @@ def _parse_args() -> argparse.Namespace:
         choices=tuple(ROLL_CURRICULUM_STAGES),
         default="c3q_720_c3l_strict_settle",
         help="Goal reference stage for --auto-curriculum.",
+    )
+    parser.add_argument(
+        "--best-safe-checkpoint",
+        action="store_true",
+        help=(
+            "For auto-curriculum runs, keep best_safe.pt at the latest high-quality "
+            "safe curriculum state and restore it after rollback."
+        ),
+    )
+    parser.add_argument(
+        "--best-safe-checkpoint-interval",
+        type=int,
+        default=1,
+        help="Minimum PPO iterations between best_safe.pt writes. Default: 1.",
+    )
+    parser.add_argument(
+        "--best-safe-min-window-episodes",
+        type=int,
+        default=512,
+        help="Minimum auto-curriculum rolling-window episodes before saving best_safe.pt.",
+    )
+    parser.add_argument(
+        "--best-safe-restore-cooldown",
+        type=int,
+        default=1,
+        help="Minimum PPO iterations between best_safe.pt restores. Default: 1.",
+    )
+    parser.add_argument(
+        "--best-safe-restore-mode",
+        choices=("weights-only", "full"),
+        default="weights-only",
+        help=(
+            "How to restore best_safe.pt after rollback. 'weights-only' restores "
+            "actor/critic without rewinding PPO iteration; 'full' also restores "
+            "optimizer, iteration, and env state."
+        ),
     )
     parser.add_argument(
         "--resume-checkpoint",
@@ -288,6 +328,11 @@ def _eval_device_arg(eval_device: str, train_device: str) -> str:
 def _goal_eval_stage(args: argparse.Namespace) -> str | None:
     if args.eval_curriculum_stage is not None:
         return args.eval_curriculum_stage
+    if (
+        args.auto_curriculum == POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM
+        and args.auto_curriculum_goal_stage == "c3q_720_c3l_strict_settle"
+    ):
+        return "c3t_720_c3r_settle_sat_guard"
     if args.auto_curriculum is not None:
         return args.auto_curriculum_goal_stage
     return args.curriculum_stage
@@ -488,6 +533,171 @@ def _wait_for_eval_sync_status(
             time.sleep(poll_interval_s)
 
 
+def _log_iteration(log_args: tuple[Any, ...], log_kwargs: dict[str, Any]) -> int | None:
+    iteration = log_kwargs.get("it")
+    if iteration is None and log_args:
+        iteration = log_args[0]
+    return iteration if isinstance(iteration, int) else None
+
+
+def _auto_curriculum_prefix(args: argparse.Namespace) -> str | None:
+    if args.auto_curriculum is None:
+        return None
+    return f"Curriculum/{args.auto_curriculum}"
+
+
+def _curriculum_scalar(
+    log: dict[str, Any],
+    prefix: str,
+    name: str,
+    default: float = 0.0,
+) -> float:
+    value = log.get(f"{prefix}/{name}", default)
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            return default
+        return float(value.detach().cpu().item())
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _best_safe_score(log: dict[str, Any], prefix: str) -> tuple[float, ...]:
+    return (
+        _curriculum_scalar(log, prefix, "phase_index"),
+        _curriculum_scalar(log, prefix, "progress"),
+        _curriculum_scalar(log, prefix, "success_rate"),
+        _curriculum_scalar(log, prefix, "target_reached_rate"),
+    )
+
+
+def _write_best_safe_metadata(path: Path, payload: dict[str, Any]) -> None:
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _install_best_safe_checkpoint_hook(
+    runner: MjlabOnPolicyRunner,
+    *,
+    env: ManagerBasedRlEnv,
+    log_dir: Path,
+    args: argparse.Namespace,
+    device: str,
+) -> Path:
+    prefix = _auto_curriculum_prefix(args)
+    if prefix is None:
+        raise ValueError("best-safe checkpointing requires --auto-curriculum.")
+
+    original_log = runner.logger.log
+    checkpoint_path = log_dir / "best_safe.pt"
+    metadata_path = log_dir / "best_safe.json"
+    min_window_episodes = int(args.best_safe_min_window_episodes)
+    save_interval = max(1, int(args.best_safe_checkpoint_interval))
+    restore_cooldown = max(0, int(args.best_safe_restore_cooldown))
+    restore_mode = str(args.best_safe_restore_mode)
+
+    best_score: tuple[float, ...] | None = None
+    last_save_iteration: int | None = None
+    last_restore_iteration: int | None = None
+    last_seen_rollback_count = 0.0
+    last_restored_rollback_count = 0.0
+
+    def hooked_log(*log_args: Any, **log_kwargs: Any) -> Any:
+        nonlocal best_score
+        nonlocal last_save_iteration
+        nonlocal last_restore_iteration
+        nonlocal last_seen_rollback_count
+        nonlocal last_restored_rollback_count
+
+        result = original_log(*log_args, **log_kwargs)
+        iteration = _log_iteration(log_args, log_kwargs)
+        if iteration is None:
+            return result
+
+        log = getattr(env, "extras", {}).get("log", {})
+        if not isinstance(log, dict):
+            return result
+
+        rollback_count = _curriculum_scalar(log, prefix, "rollback_count")
+        rollback_happened = rollback_count > last_seen_rollback_count
+        last_seen_rollback_count = max(last_seen_rollback_count, rollback_count)
+        if (
+            rollback_happened
+            and rollback_count > last_restored_rollback_count
+            and checkpoint_path.exists()
+            and (
+                last_restore_iteration is None
+                or iteration - last_restore_iteration >= restore_cooldown
+            )
+        ):
+            if restore_mode == "weights-only":
+                runner.load(
+                    str(checkpoint_path),
+                    load_cfg={
+                        "actor": True,
+                        "critic": True,
+                        "optimizer": False,
+                        "iteration": False,
+                        "rnd": False,
+                    },
+                    map_location=device,
+                )
+                env.unwrapped.common_step_counter = 0
+            else:
+                runner.load(str(checkpoint_path), map_location=device)
+            last_restore_iteration = iteration
+            last_restored_rollback_count = rollback_count
+            print(
+                "best_safe_checkpoint_restored "
+                f"iteration={iteration} rollback_count={rollback_count:.0f} "
+                f"mode={restore_mode} path={checkpoint_path}"
+            )
+
+        if _curriculum_scalar(log, prefix, "safe") < 1.0:
+            return result
+        if _curriculum_scalar(log, prefix, "phase_cap_pending") > 0.0:
+            return result
+        if _curriculum_scalar(log, prefix, "window_episodes") < min_window_episodes:
+            return result
+        if (
+            last_save_iteration is not None
+            and iteration - last_save_iteration < save_interval
+        ):
+            return result
+
+        score = _best_safe_score(log, prefix)
+        if best_score is not None and score <= best_score:
+            return result
+
+        runner.save(str(checkpoint_path))
+        best_score = score
+        last_save_iteration = iteration
+        metadata = {
+            "auto_curriculum": args.auto_curriculum,
+            "checkpoint": checkpoint_path.name,
+            "iteration": iteration,
+            "phase_index": score[0],
+            "progress": score[1],
+            "success_rate": score[2],
+            "target_reached_rate": score[3],
+            "rollback_count": rollback_count,
+            "window_episodes": _curriculum_scalar(log, prefix, "window_episodes"),
+        }
+        _write_best_safe_metadata(metadata_path, metadata)
+        print(
+            "best_safe_checkpoint_saved "
+            f"iteration={iteration} phase_index={score[0]:.0f} "
+            f"progress={score[1]:.4f} success_rate={score[2]:.4f} "
+            f"path={checkpoint_path}"
+        )
+        return result
+
+    runner.logger.log = hooked_log
+    return checkpoint_path
+
+
 def _install_eval_hook(
     runner: MjlabOnPolicyRunner,
     *,
@@ -503,10 +713,8 @@ def _install_eval_hook(
 
     def hooked_log(*log_args: Any, **log_kwargs: Any) -> Any:
         result = original_log(*log_args, **log_kwargs)
-        iteration = log_kwargs.get("it")
-        if iteration is None and log_args:
-            iteration = log_args[0]
-        if not isinstance(iteration, int):
+        iteration = _log_iteration(log_args, log_kwargs)
+        if iteration is None:
             return result
         if (iteration + 1) % int(args.eval_interval) != 0:
             return result
@@ -523,6 +731,11 @@ def _install_eval_hook(
                 current_stage = args.curriculum_stage
                 if current_stage is None and args.auto_curriculum is not None:
                     current_stage = "c3l_720_xy_guard"
+                    if (
+                        args.auto_curriculum
+                        == POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM
+                    ):
+                        current_stage = "c3r_720_post_target_tx_brake"
                 if args.auto_curriculum is not None:
                     _run_checkpoint_eval(
                         checkpoint_path=checkpoint_path,
@@ -574,11 +787,25 @@ def main() -> None:
     device = _resolve_device(args.device)
     num_envs = args.num_envs if args.num_envs is not None else _default_num_envs(device)
     _validate_eval_args(args)
+    if (
+        args.auto_curriculum == POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM
+        and args.auto_curriculum_goal_stage == "c3q_720_c3l_strict_settle"
+    ):
+        args.auto_curriculum_goal_stage = "c3t_720_c3r_settle_sat_guard"
 
     if num_envs <= 0:
         raise SystemExit("--num-envs must be positive.")
     if args.iterations <= 0:
         raise SystemExit("--iterations must be positive.")
+    if args.best_safe_checkpoint:
+        if args.auto_curriculum is None:
+            raise SystemExit("--best-safe-checkpoint requires --auto-curriculum.")
+        if args.best_safe_checkpoint_interval <= 0:
+            raise SystemExit("--best-safe-checkpoint-interval must be positive.")
+        if args.best_safe_min_window_episodes < 0:
+            raise SystemExit("--best-safe-min-window-episodes must be non-negative.")
+        if args.best_safe_restore_cooldown < 0:
+            raise SystemExit("--best-safe-restore-cooldown must be non-negative.")
 
     os.environ.setdefault("MUJOCO_GL", "egl")
     configure_torch_backends()
@@ -586,6 +813,10 @@ def main() -> None:
     # Rank-aware seed offset so different distributed workers see diverse rollouts.
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if args.best_safe_checkpoint and world_size > 1:
+        raise SystemExit(
+            "--best-safe-checkpoint currently supports single-process training only."
+        )
     seed = args.seed + rank
 
     env_cfg = make_taluy_roll_env_cfg(
@@ -603,7 +834,10 @@ def main() -> None:
     if args.run_name is not None:
         run_name = args.run_name
     elif args.auto_curriculum is not None:
-        start_stage = args.curriculum_stage or "c3l_720_xy_guard"
+        default_start_stage = "c3l_720_xy_guard"
+        if args.auto_curriculum == POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM:
+            default_start_stage = "c3r_720_post_target_tx_brake"
+        start_stage = args.curriculum_stage or default_start_stage
         run_name = f"{args.auto_curriculum}_from_{start_stage}"
     else:
         run_name = args.curriculum_stage or "smoke"
@@ -661,6 +895,8 @@ def main() -> None:
     printed_stage_name = args.curriculum_stage
     if printed_stage_name is None and args.auto_curriculum is not None:
         printed_stage_name = "c3l_720_xy_guard"
+        if args.auto_curriculum == POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM:
+            printed_stage_name = "c3r_720_post_target_tx_brake"
     if printed_stage_name is None:
         print("task=roll_v1 target_roll_deg=720.0 roll_direction=1 settle_window_s=1.0")
     else:
@@ -677,6 +913,12 @@ def main() -> None:
             f"auto_curriculum={args.auto_curriculum} "
             f"auto_curriculum_goal_stage={args.auto_curriculum_goal_stage}"
         )
+    if args.best_safe_checkpoint:
+        print(
+            "best_safe_checkpoint=true "
+            f"restore_mode={args.best_safe_restore_mode} "
+            f"min_window_episodes={args.best_safe_min_window_episodes}"
+        )
     if args.resume_checkpoint is not None:
         print(f"resume_checkpoint={args.resume_checkpoint}")
         print(f"resume_mode={args.resume_mode}")
@@ -690,6 +932,14 @@ def main() -> None:
         evaluated_iterations: set[int] = set()
         if args.eval_interval is not None:
             evaluated_iterations = _install_eval_hook(
+                runner,
+                env=env,
+                log_dir=log_dir,
+                args=args,
+                device=device,
+            )
+        if args.best_safe_checkpoint:
+            _install_best_safe_checkpoint_hook(
                 runner,
                 env=env,
                 log_dir=log_dir,
@@ -731,6 +981,11 @@ def main() -> None:
                 current_stage = args.curriculum_stage
                 if current_stage is None and args.auto_curriculum is not None:
                     current_stage = "c3l_720_xy_guard"
+                    if (
+                        args.auto_curriculum
+                        == POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM
+                    ):
+                        current_stage = "c3r_720_post_target_tx_brake"
                 if args.auto_curriculum is not None:
                     _run_checkpoint_eval(
                         checkpoint_path=checkpoint_path,

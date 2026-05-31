@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from auvrl.scripts.train import taluy_roll as roll_train
@@ -14,6 +15,114 @@ def _eval_args() -> SimpleNamespace:
         auto_curriculum_goal_stage="c3q_720_c3l_strict_settle",
         curriculum_stage="c3l_720_xy_guard",
     )
+
+
+def _best_safe_args(**overrides: object) -> SimpleNamespace:
+    args = SimpleNamespace(
+        auto_curriculum=roll_train.POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM,
+        best_safe_checkpoint_interval=1,
+        best_safe_min_window_episodes=1,
+        best_safe_restore_cooldown=1,
+        best_safe_restore_mode="weights-only",
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+def _curriculum_log(**overrides: float) -> dict[str, float]:
+    prefix = f"Curriculum/{roll_train.POST_C3R_SETTLE_SATURATION_AUTO_CURRICULUM}"
+    values = {
+        "safe": 1.0,
+        "phase_cap_pending": 0.0,
+        "window_episodes": 512.0,
+        "rollback_count": 0.0,
+        "phase_index": 2.0,
+        "progress": 0.35,
+        "success_rate": 0.99,
+        "target_reached_rate": 1.0,
+    }
+    values.update(overrides)
+    return {f"{prefix}/{key}": value for key, value in values.items()}
+
+
+def test_best_safe_checkpoint_hook_saves_safe_curriculum_state(tmp_path) -> None:
+    events: list[tuple[str, str]] = []
+    env = SimpleNamespace(
+        extras={"log": _curriculum_log()},
+        unwrapped=SimpleNamespace(common_step_counter=10),
+    )
+
+    def save(path: str) -> None:
+        Path(path).write_text("checkpoint", encoding="utf-8")
+        events.append(("save", Path(path).name))
+
+    runner = SimpleNamespace(
+        logger=SimpleNamespace(log=lambda **_: "logged"),
+        save=save,
+        load=lambda *_args, **_kwargs: events.append(("load", "unexpected")),
+    )
+
+    checkpoint_path = roll_train._install_best_safe_checkpoint_hook(
+        runner,
+        env=env,
+        log_dir=tmp_path,
+        args=_best_safe_args(),
+        device="cpu",
+    )
+
+    assert runner.logger.log(it=7) == "logged"
+    assert checkpoint_path == tmp_path / "best_safe.pt"
+    assert checkpoint_path.read_text(encoding="utf-8") == "checkpoint"
+    metadata = (tmp_path / "best_safe.json").read_text(encoding="utf-8")
+    assert '"iteration": 7' in metadata
+    assert '"success_rate": 0.99' in metadata
+    assert events == [("save", "best_safe.pt")]
+
+
+def test_best_safe_checkpoint_hook_restores_after_rollback(tmp_path) -> None:
+    loads: list[dict[str, object]] = []
+    env = SimpleNamespace(
+        extras={
+            "log": _curriculum_log(
+                safe=0.0,
+                rollback_count=1.0,
+                success_rate=0.94,
+            )
+        },
+        unwrapped=SimpleNamespace(common_step_counter=27),
+    )
+    (tmp_path / "best_safe.pt").write_text("checkpoint", encoding="utf-8")
+
+    def load(path: str, **kwargs: object) -> None:
+        loads.append({"path": Path(path).name, **kwargs})
+
+    runner = SimpleNamespace(
+        logger=SimpleNamespace(log=lambda **_: "logged"),
+        save=lambda _path: None,
+        load=load,
+    )
+
+    roll_train._install_best_safe_checkpoint_hook(
+        runner,
+        env=env,
+        log_dir=tmp_path,
+        args=_best_safe_args(),
+        device="cpu",
+    )
+
+    assert runner.logger.log(it=11) == "logged"
+    assert len(loads) == 1
+    assert loads[0]["path"] == "best_safe.pt"
+    assert loads[0]["map_location"] == "cpu"
+    assert loads[0]["load_cfg"] == {
+        "actor": True,
+        "critic": True,
+        "optimizer": False,
+        "iteration": False,
+        "rnd": False,
+    }
+    assert env.unwrapped.common_step_counter == 0
 
 
 def test_eval_sync_status_round_trip(tmp_path) -> None:
