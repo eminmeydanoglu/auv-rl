@@ -313,6 +313,41 @@ def test_post_target_roll_through_torque_penalty_is_inactive_before_target() -> 
     assert torch.allclose(value, torch.zeros(1))
 
 
+def test_post_target_roll_through_metric_averages_only_after_target() -> None:
+    env = _make_env()
+    state = get_roll_task_state(env)
+    target_roll_rad = 4.0 * math.pi
+    metric = mdp.PostTargetRollThroughTorqueMean(cfg=object(), env=env)
+
+    state.phi_total_rad[:] = 0.95 * target_roll_rad
+    state.target_reached[:] = False
+    env.action_manager.action[:, 3] = 1.0
+    before_target = metric(
+        env,
+        roll_direction=1,
+        target_roll_rad=target_roll_rad,
+    )
+
+    state.phi_total_rad[:] = target_roll_rad
+    env.action_manager.action[:, 3] = 1.0
+    first_post_target = metric(
+        env,
+        roll_direction=1,
+        target_roll_rad=target_roll_rad,
+    )
+
+    env.action_manager.action[:, 3] = 0.0
+    second_post_target = metric(
+        env,
+        roll_direction=1,
+        target_roll_rad=target_roll_rad,
+    )
+
+    assert torch.allclose(before_target, torch.zeros(1))
+    assert torch.allclose(first_post_target, torch.ones(1))
+    assert torch.allclose(second_post_target, torch.tensor([0.5]))
+
+
 def test_thruster_saturation_cost_penalizes_only_threshold_excess() -> None:
     env = _make_env()
     value = mdp.thruster_saturation_cost(env, threshold=0.8)

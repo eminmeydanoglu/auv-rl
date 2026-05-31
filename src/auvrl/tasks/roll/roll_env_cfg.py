@@ -236,7 +236,26 @@ def make_roll_env_cfg(
         "pitch_abs_rad": MetricsTermCfg(func=mdp.pitch_abs_rad),
         "yaw_abs_error_rad": MetricsTermCfg(func=mdp.yaw_abs_error_rad),
         "root_ang_speed_rad_s": MetricsTermCfg(func=mdp.root_ang_speed_rad_s),
+        "root_ang_speed_rad_s_last": MetricsTermCfg(
+            func=mdp.root_ang_speed_rad_s,
+            reduce="last",
+        ),
         "body_wrench_action_l2": MetricsTermCfg(func=mdp.body_wrench_action_l2),
+        "body_wrench_action_rate_l2": MetricsTermCfg(
+            func=mdp.body_wrench_action_rate_l2_metric
+        ),
+        "nonroll_body_wrench_action_rate_l2": MetricsTermCfg(
+            func=mdp.nonroll_body_wrench_action_rate_l2_metric
+        ),
+        "post_target_roll_through_torque": MetricsTermCfg(
+            func=mdp.PostTargetRollThroughTorqueMean,
+            reduce="last",
+            params={
+                "roll_direction": roll_direction,
+                "target_roll_rad": target_roll_rad,
+                "action_name": "body_wrench",
+            },
+        ),
         "body_wrench_saturation_fraction": MetricsTermCfg(
             func=mdp.body_wrench_saturation_fraction
         ),
