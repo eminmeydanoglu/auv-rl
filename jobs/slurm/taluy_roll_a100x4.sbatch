@@ -52,7 +52,7 @@ ITERS="${ITERS:-700}"
 NUM_ENVS_PER_GPU="${NUM_ENVS_PER_GPU:-1024}"
 NUM_STEPS_PER_ENV="${NUM_STEPS_PER_ENV:-256}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-10}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-50}"
+EVAL_INTERVAL="${EVAL_INTERVAL-50}"
 EVAL_NUM_ENVS="${EVAL_NUM_ENVS:-256}"
 EVAL_MAX_STEPS="${EVAL_MAX_STEPS:-}"
 EVAL_SUITE="${EVAL_SUITE:-}"
@@ -159,6 +159,8 @@ printf 'eval_curriculum_stage=%s\n' "$EVAL_CURRICULUM_STAGE"
 printf 'eval_skip_images=%s\n' "$EVAL_SKIP_IMAGES"
 printf 'no_eval_final=%s\n' "$NO_EVAL_FINAL"
 printf 'eval_continue_on_error=%s\n' "$EVAL_CONTINUE_ON_ERROR"
+printf 'uv_no_sync=%s\n' "${UV_NO_SYNC:-}"
+printf 'uv_link_mode=%s\n' "${UV_LINK_MODE:-}"
 printf 'log_dir=%s\n' "$AUVRL_LOG_DIR"
 printf 'master_addr=%s\n' "$MASTER_ADDR"
 printf 'master_port=%s\n' "$MASTER_PORT"
@@ -182,6 +184,11 @@ mkdir -p "$(dirname "$LAUNCH_SCRIPT")"
   printf 'set -euo pipefail\n'
   printf 'export HOME=%q USER=%q LOGNAME=%q TMPDIR=%q XDG_CONFIG_HOME=%q XDG_CACHE_HOME=%q GIT_CONFIG_GLOBAL=%q GIT_SSH_COMMAND=%q HISTFILE=%q PATH=%q MUJOCO_GL=%q UV_CACHE_DIR=%q MPLCONFIGDIR=%q AUVRL_LOG_DIR=%q\n' \
     "$HOME" "$USER" "$LOGNAME" "$TMPDIR" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$GIT_CONFIG_GLOBAL" "$GIT_SSH_COMMAND" "$HISTFILE" "$PATH" "$MUJOCO_GL" "$UV_CACHE_DIR" "$MPLCONFIGDIR" "$AUVRL_LOG_DIR"
+  for env_name in UV_NO_SYNC UV_LINK_MODE; do
+    if [ -n "${!env_name:-}" ]; then
+      printf 'export %s=%q\n' "$env_name" "${!env_name}"
+    fi
+  done
   printf 'unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER CONDA_SHLVL VIRTUAL_ENV PYTHONHOME PYTHONPATH\n'
   printf 'cd %q\n' "$AUV_PROJECT_DIR"
   printf 'exec'
