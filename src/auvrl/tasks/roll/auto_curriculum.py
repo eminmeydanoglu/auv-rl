@@ -56,14 +56,14 @@ class PostC3LPolishSchedule:
 class PostC3RSettleSaturationSchedule(PostC3LPolishSchedule):
     success_advance_threshold: float = 0.98
     success_rollback_threshold: float = 0.95
-    xy_peak_advance_max_m: float = 0.50
+    xy_peak_advance_max_m: float = 0.60
     xy_peak_rollback_max_m: float = 0.70
     pre_settle_xy_rollback_max_m: float = 0.70
     pitch_peak_advance_max_deg: float = 30.0
     pitch_peak_rollback_max_deg: float = 45.0
-    yaw_abs_advance_max_rad: float = math.radians(10.0)
+    yaw_abs_advance_max_rad: float = math.radians(15.0)
     yaw_abs_rollback_max_rad: float = math.radians(20.0)
-    depth_abs_advance_max_m: float = 0.25
+    depth_abs_advance_max_m: float = 0.35
     depth_abs_rollback_max_m: float = 0.50
     saturation_advance_max: float = 0.42
     saturation_rollback_max: float = 0.60
@@ -218,7 +218,7 @@ class PostC3LPolishCurriculum:
         ids = _env_id_tensor(env, env_ids)
         self._record_completed_episodes(env, ids)
         self._last_update = 0
-        self._last_safe = int(self._can_advance())
+        self._last_safe = int(self._is_safe_for_checkpoint())
         self._last_rollback = 0
         self._last_cap = 0
         if self._last_safe:
@@ -496,6 +496,9 @@ class PostC3LPolishCurriculum:
             or saturation_mean > self._schedule.saturation_rollback_max
             or action_l2_mean > self._schedule.action_l2_rollback_max
         )
+
+    def _is_safe_for_checkpoint(self) -> bool:
+        return self._can_advance()
 
     def _apply_values(self, env: ManagerBasedRlEnv) -> None:
         for field, (term_name, sign) in self._REWARD_FIELDS.items():
@@ -878,7 +881,56 @@ class PostC3RSettleSaturationCurriculum(PostC3LPolishCurriculum):
             self._post_target_roll_through,
         )
 
+    def _update_curriculum(self) -> None:
+        self._phase_update_count += 1
+        if self._phase_index == 0:
+            self._observe_count += 1
+            if (
+                self._observe_count >= self._schedule.observe_updates
+                and self._is_safe_for_checkpoint()
+            ):
+                self._set_phase_index(1)
+            return
+        if self._phase_cap_pending:
+            if self._must_rollback():
+                self._rollback_phase()
+                return
+            if self._is_safe_for_checkpoint():
+                self._cap_phase()
+            return
+        if self._must_rollback():
+            self._rollback_phase()
+            return
+        phase = self._PHASES[self._phase_index]
+        if phase == "done":
+            return
+        if self._is_safe_for_checkpoint():
+            self._advance_or_hold_phase()
+
+    def _advance_or_hold_phase(self) -> None:
+        phase = self._PHASES[self._phase_index]
+        changed = False
+        if not self._phase_complete(phase, self._goal):
+            self._remember_safe_values()
+            changed = self._move_phase(phase, self._goal)
+            if changed:
+                self._advance_count += 1
+                self._phase_advance_count += 1
+                self._last_update = 1
+        if self._phase_complete(phase, self._goal) and self._current_phase_objective_ok():
+            if not changed:
+                self._remember_safe_values()
+                self._advance_count += 1
+                self._phase_advance_count += 1
+                self._last_update = 1
+            self._set_phase_index(min(self._phase_index + 1, len(self._PHASES) - 1))
+
     def _can_advance(self) -> bool:
+        if not self._is_safe_for_checkpoint():
+            return False
+        return self._current_phase_objective_ok()
+
+    def _is_safe_for_checkpoint(self) -> bool:
         if not self._success:
             return False
         gates = self._gate_state()
@@ -888,13 +940,36 @@ class PostC3RSettleSaturationCurriculum(PostC3LPolishCurriculum):
             "advance_blocked_by_pitch",
             "advance_blocked_by_yaw",
             "advance_blocked_by_depth",
-            "advance_blocked_by_post_target_roll_through",
-            "advance_blocked_by_action_rate",
-            "advance_blocked_by_nonroll_action_rate",
-            "advance_blocked_by_saturation",
-            "advance_blocked_by_root_ang_speed",
+            "rollback_blocked_by_root_ang_speed",
         )
         return not any(bool(gates[name]) for name in blockers)
+
+    def _current_phase_objective_ok(self) -> bool:
+        gates = self._gate_state()
+        blockers = self._current_phase_objective_blockers()
+        return not any(bool(gates[name]) for name in blockers)
+
+    def _current_phase_objective_blockers(self) -> tuple[str, ...]:
+        phase = self._PHASES[self._phase_index]
+        if phase == "post_target_brake":
+            return ("advance_blocked_by_post_target_roll_through",)
+        if phase == "nonroll_rate":
+            return ("advance_blocked_by_nonroll_action_rate",)
+        if phase == "global_action_regularization":
+            return ("advance_blocked_by_action_rate",)
+        if phase in {"saturation_weight", "saturation_threshold"}:
+            return ("advance_blocked_by_saturation",)
+        if phase == "hard_pitch_envelope":
+            return ("advance_blocked_by_pitch",)
+        if phase == "settle_attitude":
+            return ("advance_blocked_by_pitch", "advance_blocked_by_yaw")
+        if phase == "settle_depth":
+            return ("advance_blocked_by_depth",)
+        if phase == "settle_xy":
+            return ("advance_blocked_by_xy",)
+        if phase == "settle_ang_vel":
+            return ("advance_blocked_by_root_ang_speed",)
+        return ()
 
     def _must_rollback(self) -> bool:
         if not self._success:
@@ -906,10 +981,6 @@ class PostC3RSettleSaturationCurriculum(PostC3LPolishCurriculum):
             "rollback_blocked_by_pitch",
             "rollback_blocked_by_yaw",
             "rollback_blocked_by_depth",
-            "rollback_blocked_by_post_target_roll_through",
-            "rollback_blocked_by_action_rate",
-            "rollback_blocked_by_nonroll_action_rate",
-            "rollback_blocked_by_saturation",
             "rollback_blocked_by_root_ang_speed",
         )
         return any(bool(gates[name]) for name in blockers)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -183,6 +184,38 @@ def _c3r_term() -> tuple[
     return PostC3RSettleSaturationCurriculum(cfg=cfg, env=env), env, schedule
 
 
+def _fill_c3r_window(
+    term: PostC3RSettleSaturationCurriculum,
+    *,
+    success: float = 1.0,
+    target_reached: float = 1.0,
+    xy_peak_m: float = 0.20,
+    pitch_peak_rad: float = 0.20,
+    yaw_abs_error_rad: float = 0.05,
+    depth_abs_error_m: float = 0.10,
+    root_ang_speed_rad_s: float = 1.0,
+    saturation: float = 0.20,
+    action_rate: float = 0.20,
+    nonroll_action_rate: float = 0.20,
+    post_target_roll_through: float = 0.10,
+) -> None:
+    term._success.extend([success, success])
+    term._target_reached.extend([target_reached, target_reached])
+    term._xy_peak_m.extend([xy_peak_m, xy_peak_m])
+    term._pitch_peak_rad.extend([pitch_peak_rad, pitch_peak_rad])
+    term._depth_abs_error_m.extend([depth_abs_error_m, depth_abs_error_m])
+    term._pitch_abs_rad.extend([pitch_peak_rad, pitch_peak_rad])
+    term._yaw_abs_error_rad.extend([yaw_abs_error_rad, yaw_abs_error_rad])
+    term._root_ang_speed_rad_s.extend([root_ang_speed_rad_s, root_ang_speed_rad_s])
+    term._action_l2.extend([4.0, 4.0])
+    term._saturation.extend([saturation, saturation])
+    term._action_rate_l2.extend([action_rate, action_rate])
+    term._nonroll_action_rate_l2.extend([nonroll_action_rate, nonroll_action_rate])
+    term._post_target_roll_through.extend(
+        [post_target_roll_through, post_target_roll_through]
+    )
+
+
 def test_post_c3l_polish_advances_attitude_depth_after_safe_windows() -> None:
     term, env, schedule = _term()
     env_ids = torch.tensor([0, 1], dtype=torch.long)
@@ -330,6 +363,48 @@ def test_post_c3r_settle_saturation_starts_from_c3r_guard_values() -> None:
     )
 
 
+def test_post_c3r_advance_axis_limits_do_not_exceed_goal_stage() -> None:
+    _, _, schedule = _c3r_term()
+
+    assert schedule.yaw_abs_advance_max_rad == pytest.approx(
+        math.radians(15.0)
+    )
+    assert schedule.xy_peak_advance_max_m == pytest.approx(
+        schedule.goal_stage.settle_xy_drift_limit_m
+    )
+    assert schedule.depth_abs_advance_max_m == pytest.approx(
+        schedule.goal_stage.settle_depth_error_limit_m
+    )
+    assert schedule.pitch_peak_advance_max_deg == pytest.approx(
+        schedule.goal_stage.settle_pitch_limit_deg
+    )
+
+
+def test_post_c3r_observe_allows_goal_yaw_limit() -> None:
+    term, _, _ = _c3r_term()
+    _fill_c3r_window(
+        term,
+        xy_peak_m=0.24131,
+        pitch_peak_rad=math.radians(12.5),
+        yaw_abs_error_rad=0.21338,
+        depth_abs_error_m=0.03717,
+        root_ang_speed_rad_s=1.83061,
+        saturation=0.49001,
+        action_rate=1.02503,
+        nonroll_action_rate=1.02382,
+        post_target_roll_through=0.98948,
+    )
+
+    term._update_curriculum()
+    state = term._state()
+
+    assert state["phase_is_post_target_brake"] == 1.0
+    assert state["advance_blocked_by_yaw"] == 0.0
+    assert state["advance_blocked_by_post_target_roll_through"] == 1.0
+    assert state["advance_blocked_by_action_rate"] == 0.0
+    assert state["advance_blocked_by_nonroll_action_rate"] == 0.0
+
+
 def test_post_c3r_settle_saturation_advances_post_target_brake_weight() -> None:
     term, env, schedule = _c3r_term()
     env_ids = torch.tensor([0, 1], dtype=torch.long)
@@ -346,6 +421,72 @@ def test_post_c3r_settle_saturation_advances_post_target_brake_weight() -> None:
     )
     assert state["advance_blocked_by_post_target_roll_through"] == 0.0
     assert state["post_target_roll_through_mean"] == pytest.approx(0.11)
+
+
+def test_post_c3r_phase_objectives_drive_progress_without_rollback() -> None:
+    term, _, _ = _c3r_term()
+    term._phase_index = term._PHASES.index("post_target_brake")
+    _fill_c3r_window(
+        term,
+        post_target_roll_through=0.99,
+        action_rate=1.02,
+        nonroll_action_rate=1.02,
+        saturation=0.49,
+    )
+
+    state = term._state()
+    assert state["advance_blocked_by_post_target_roll_through"] == 1.0
+    assert state["rollback_blocked_by_post_target_roll_through"] == 1.0
+    assert state["rollback_blocked_by_action_rate"] == 1.0
+    assert state["rollback_blocked_by_nonroll_action_rate"] == 1.0
+    assert not term._can_advance()
+    assert not term._must_rollback()
+
+    term._update_curriculum()
+    state = term._state()
+
+    assert state["phase_is_post_target_brake"] == 1.0
+    assert state["last_update"] == 1.0
+    assert state["last_rollback"] == 0.0
+    assert state["k_post_target_roll_through_torque"] == pytest.approx(0.035)
+
+
+def test_post_c3r_phase_cap_continues_after_safe_recovery_even_if_objective_bad() -> None:
+    term, _, _ = _c3r_term()
+    term._phase_index = term._PHASES.index("post_target_brake")
+    term._phase_cap_pending = True
+    _fill_c3r_window(
+        term,
+        post_target_roll_through=0.99,
+        action_rate=1.02,
+        nonroll_action_rate=1.02,
+        saturation=0.49,
+    )
+
+    term._update_curriculum()
+    state = term._state()
+
+    assert state["last_cap"] == 1.0
+    assert state["phase_cap_pending"] == 0.0
+    assert state["phase_capped_post_target_brake"] == 1.0
+    assert state["phase_is_nonroll_rate"] == 1.0
+    assert state["advance_blocked_by_post_target_roll_through"] == 1.0
+
+
+def test_post_c3r_safe_checkpoint_rejects_root_ang_speed_regression() -> None:
+    term, _, _ = _c3r_term()
+    term._phase_index = term._PHASES.index("post_target_brake")
+    _fill_c3r_window(
+        term,
+        root_ang_speed_rad_s=2.2,
+        post_target_roll_through=0.10,
+    )
+
+    state = term._state()
+
+    assert state["rollback_blocked_by_root_ang_speed"] == 1.0
+    assert not term._is_safe_for_checkpoint()
+    assert term._must_rollback()
 
 
 def test_auto_curriculum_prefers_terminal_ang_speed_for_settle_gate() -> None:
